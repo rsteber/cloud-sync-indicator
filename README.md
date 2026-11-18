@@ -12,7 +12,8 @@ running as a systemd user service (`onedrive.service`).
   resync required, error (including repeated restarts). On errors the icon changes color
   and a notification appears.
 - **Menu:** open the OneDrive folder, edit the configuration, pause/start, restart,
-  recent messages (number configurable, 1–30), full log in a terminal.
+  recent messages (number configurable, 1–30; by default only file operations such as
+  uploads, downloads, deletions and moves), full log in a terminal.
 - **Sign-in:** a dedicated sign-in window (WebKitGTK) that passes the response address of the
   Microsoft sign-in to the client by itself. Fallback: sign in using the browser and take the
   response address from the clipboard.
@@ -72,7 +73,9 @@ merge it into a translation:
 
 ```bash
 xgettext --from-code=UTF-8 --language=JavaScript --keyword=_ --keyword=N_ \
-  --add-comments=Translators -o po/cloud-sync-indicator.pot extension.js prefs.js auth-window.js
+  --add-comments=Translators --package-name=cloud-sync-indicator \
+  --msgid-bugs-address=https://github.com/rsteber/cloud-sync-indicator/issues \
+  -o po/cloud-sync-indicator.pot extension.js prefs.js auth-window.js
 msgmerge --update po/de.po po/cloud-sync-indicator.pot
 ```
 

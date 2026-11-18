@@ -5,7 +5,12 @@
       <range min="1" max="30"/>
       <default>12</default>
       <summary>Number of entries under “Recent Messages”</summary>
-      <description>How many of the latest client messages (without routine lines) the menu shows. At most 30 so that the menu fits on the screen.</description>
+      <description>How many of the latest client messages the menu shows. At most 30 so that the menu fits on the screen.</description>
+    </key>
+    <key name="file-operations-only" type="b">
+      <default>true</default>
+      <summary>Show only file operations under “Recent Messages”</summary>
+      <description>If set, only uploads, downloads, deletions, moves and created folders are listed. Otherwise all client messages except recurring routine lines are listed.</description>
     </key>
   </schema>
 </schemalist>

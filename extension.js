@@ -42,12 +42,20 @@ const RUNNING = ['active', 'activating', 'reloading'];
 // Client log messages (v2.5.x).
 const RE_SYNC_START = /Starting a sync with Microsoft OneDrive/;
 const RE_SYNC_DONE = /Sync with Microsoft OneDrive is complete/;
-const RE_TRANSFER = /^(Uploading|Downloading|Deleting|Moving|Creating)\b/;
+// File operations, shown under "Recent Messages" when "file-operations-only" is set.
+// Progress lines ("Uploading: … 42%") and notices ("Trying to delete …") are left out.
+const RE_FILE_OP = new RegExp([
+    '^Uploading (new|modified) file: ',
+    '^Downloading file: ',
+    '^Deleting (local (file|directory)|item from Microsoft OneDrive): ',
+    '^Moving .+ to ',
+    '^Successfully created the remote directory ',
+].join('|'));
 const RE_AUTH = /AADSTS\d+|invalid_grant|authori[sz]e this application|re-?authenticat|refresh[_ ]token.*(invalid|expired|missing)/i;
 const RE_OFFLINE = /Cannot connect to Microsoft OneDrive|Unable to (reach|access) Microsoft OneDrive|network connection.*(not |un)available|Internet connectivity.*(lost|unavailable)/i;
 const RE_ONLINE = /Successfully reached Microsoft OneDrive/;
 const RE_UNIT_STARTED = /^Started onedrive\.service/;
-// Messages of every sync cycle that would only clutter the recent messages.
+// Messages of every sync cycle that would only clutter the full message list.
 const RE_ROUTINE = /Microsoft OneDrive Login Service|^Starting a sync|^Syncing changes from|is complete$/;
 
 const STATES = {
@@ -499,7 +507,8 @@ class SyncIndicator extends PanelMenu.Button {
         this._authError = false;
         this._lastSync = null;
         this._lastActivity = null;
-        this._log = [];
+        this._log = [];       // all messages except routine lines
+        this._fileLog = [];   // file operations only
         this._decoder = new TextDecoder();
         this._stateKey = null;
         this._replaying = false;
@@ -588,18 +597,25 @@ class SyncIndicator extends PanelMenu.Button {
 
     _fillLog() {
         this._logSection.removeAll();
-        if (this._log.length === 0) {
+        const log = this._settings.get_boolean('file-operations-only') ? this._fileLog : this._log;
+        if (log.length === 0) {
             this._logSection.addMenuItem(new PopupMenu.PopupMenuItem(_('(none)'), {reactive: false}));
             return;
         }
         const count = this._settings.get_int('log-entries');
-        for (const {time, msg} of this._log.slice(-count).reverse()) {
+        for (const {time, msg} of log.slice(-count).reverse()) {
             const item = new PopupMenu.PopupMenuItem(`${formatTime(time)}  ${msg}`,
                 {reactive: false, style_class: 'cloud-sync-log-item'});
             item.label.clutter_text.ellipsize = Pango.EllipsizeMode.MIDDLE;
             item.label.style = 'max-width: 36em;';
             this._logSection.addMenuItem(item);
         }
+    }
+
+    _pushLog(list, entry) {
+        list.push(entry);
+        if (list.length > this._logMax)
+            list.shift();
     }
 
     _openJournalInTerminal() {
@@ -790,8 +806,6 @@ class SyncIndicator extends PanelMenu.Button {
             this._syncing = false;
             this._authError = false;
             this._lastSync = time;
-        } else if (RE_TRANSFER.test(msg)) {
-            this._lastActivity = {time, msg};
         }
         if (RE_AUTH.test(msg))
             this._authError = true;
@@ -800,11 +814,14 @@ class SyncIndicator extends PanelMenu.Button {
         else if (RE_ONLINE.test(msg))
             this._offline = false;
 
-        if (!RE_ROUTINE.test(msg)) {
-            this._log.push({time, msg});
-            if (this._log.length > this._logMax)
-                this._log.shift();
+        // Both lists are kept, so that switching the setting takes effect immediately.
+        const entry = {time, msg};
+        if (RE_FILE_OP.test(msg)) {
+            this._lastActivity = entry;
+            this._pushLog(this._fileLog, entry);
         }
+        if (!RE_ROUTINE.test(msg))
+            this._pushLog(this._log, entry);
 
         if (this._replaying)
             this._schedule('replay-end', 1500, () => this._endReplay());
@@ -1034,7 +1051,7 @@ class SyncIndicator extends PanelMenu.Button {
         this._schedule('resync-result', 3000, () => {
             Main.notify('OneDrive', RUNNING.includes(this._props.active)
                 ? _('Resync finished, OneDrive is running again.')
-                : _('Resync failed – see “Recent Messages”.'));
+                : _('Resync failed – see “Full Log in Terminal”.'));
         });
     }
 
@@ -1057,6 +1074,7 @@ class SyncIndicator extends PanelMenu.Button {
         this._journal?.force_exit();
         this._journal = null;
         this._log = [];
+        this._fileLog = [];
         super.destroy();
     }
 });

@@ -26,5 +26,12 @@ export default class CloudSyncIndicatorPreferences extends ExtensionPreferences 
         });
         settings.bind('log-entries', row, 'value', Gio.SettingsBindFlags.DEFAULT);
         group.add(row);
+
+        const filterRow = new Adw.SwitchRow({
+            title: _('File Operations Only'),
+            subtitle: _('Uploads, downloads, deletions and moves; otherwise all client messages'),
+        });
+        settings.bind('file-operations-only', filterRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        group.add(filterRow);
     }
 }
