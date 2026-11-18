@@ -1,0 +1,375 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the cloud-sync-indicator package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: cloud-sync-indicator\n"
+"Report-Msgid-Bugs-To: https://github.com/rsteber/cloud-sync-indicator/"
+"issues\n"
+"POT-Creation-Date: 2026-11-18 13:50+0100\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: extension.js:54
+msgid "Up to date"
+msgstr ""
+
+#: extension.js:55
+msgid "Syncing …"
+msgstr ""
+
+#: extension.js:56
+msgid "Resync running …"
+msgstr ""
+
+#: extension.js:57
+msgid "Starting …"
+msgstr ""
+
+#: extension.js:58
+msgid "Stopping …"
+msgstr ""
+
+#: extension.js:59
+msgid "Paused"
+msgstr ""
+
+#: extension.js:60
+msgid "No connection to OneDrive"
+msgstr ""
+
+#: extension.js:61
+msgid "Sign-in required"
+msgstr ""
+
+#: extension.js:62
+msgid "Resync required"
+msgstr ""
+
+#: extension.js:63
+msgid "Error"
+msgstr ""
+
+#: extension.js:64
+msgid "Status unknown"
+msgstr ""
+
+#. Translators: strftime formats for times today and on other days
+#: extension.js:154
+msgid "%H:%M"
+msgstr ""
+
+#: extension.js:154
+msgid "%b %d, %H:%M"
+msgstr ""
+
+#: extension.js:193
+msgid "Continue"
+msgstr ""
+
+#: extension.js:197 extension.js:348
+msgid "Cancel"
+msgstr ""
+
+#: extension.js:242 extension.js:1009
+msgid "The “onedrive” client is not installed."
+msgstr ""
+
+#: extension.js:247
+msgid "Stopping OneDrive …"
+msgstr ""
+
+#: extension.js:256
+msgid "Requesting sign-in address …"
+msgstr ""
+
+#: extension.js:267
+#, javascript-format
+msgid "The client exited early: %s"
+msgstr ""
+
+#: extension.js:269
+msgid "The client did not provide a sign-in address."
+msgstr ""
+
+#: extension.js:275
+msgid "Unexpected content in the sign-in address file."
+msgstr ""
+
+#: extension.js:301
+#, javascript-format
+msgid "The sign-in window could not be started (%s)."
+msgstr ""
+
+#: extension.js:305
+msgid "Sign in using the sign-in window"
+msgstr ""
+
+#: extension.js:318
+msgid "Microsoft rejected the sign-in."
+msgstr ""
+
+#: extension.js:321
+msgid "Sign-in window closed."
+msgstr ""
+
+#: extension.js:325
+msgid ""
+"The sign-in window could not be started (is WebKitGTK 6.0 for GJS "
+"installed?)."
+msgstr ""
+
+#: extension.js:341
+msgid "Copy the response address from the browser"
+msgstr ""
+
+#: extension.js:342
+#, javascript-format
+msgid "%s Sign in using the browser"
+msgstr ""
+
+#: extension.js:343
+msgid ""
+"After signing in, copy the address of the blank page (…/nativeclient?code=…) "
+"– if the page redirects, it is in the browser history – then choose “Sign in "
+"from clipboard” (also in the indicator menu)."
+msgstr ""
+
+#: extension.js:347 extension.js:570
+msgid "Sign in from clipboard"
+msgstr ""
+
+#: extension.js:356
+msgid "The clipboard does not contain a response address with “code=”."
+msgstr ""
+
+#: extension.js:368
+msgid "Completing sign-in …"
+msgstr ""
+
+#: extension.js:375
+msgid "Timed out while completing sign-in."
+msgstr ""
+
+#: extension.js:379
+msgid "No sign-in token was saved."
+msgstr ""
+
+#: extension.js:381
+msgid "Signed in. Restarting OneDrive."
+msgstr ""
+
+#: extension.js:403
+msgid "OneDrive: sign-in failed"
+msgstr ""
+
+#: extension.js:411
+msgid "Sign-in cancelled."
+msgstr ""
+
+#: extension.js:556
+msgid "Open OneDrive Folder"
+msgstr ""
+
+#: extension.js:559
+msgid "Edit Configuration"
+msgstr ""
+
+#: extension.js:566
+msgid "Resync …"
+msgstr ""
+
+#: extension.js:568
+msgid "Restart"
+msgstr ""
+
+#: extension.js:575 prefs.js:23
+msgid "Recent Messages"
+msgstr ""
+
+#: extension.js:578
+msgid "Full Log in Terminal"
+msgstr ""
+
+#: extension.js:592
+msgid "(none)"
+msgstr ""
+
+#: extension.js:609
+#, javascript-format
+msgid "No terminal found. Command: %s"
+msgstr ""
+
+#: extension.js:709
+msgid "OneDrive could not be stopped."
+msgstr ""
+
+#: extension.js:852
+msgid "OneDrive configuration changed"
+msgstr ""
+
+#: extension.js:853
+msgid ""
+"The change takes effect after the client restarts. Version 2.5.4 then "
+"usually requires a resync."
+msgstr ""
+
+#: extension.js:856
+msgid "Restart Now"
+msgstr ""
+
+#: extension.js:865
+msgid "systemd service not reachable"
+msgstr ""
+
+#: extension.js:867
+#, javascript-format
+msgid "%s is not installed"
+msgstr ""
+
+#: extension.js:869
+msgid "Signing in …"
+msgstr ""
+
+#: extension.js:871
+msgid "Rebuilding the local database – this may take a while"
+msgstr ""
+
+#: extension.js:873
+msgid "Sign in again via “Sign In …”"
+msgstr ""
+
+#: extension.js:879
+msgid "The client keeps retrying"
+msgstr ""
+
+#: extension.js:883
+#, javascript-format
+msgid "Restarting repeatedly (%s×) – see recent messages"
+msgstr ""
+
+#: extension.js:889
+msgid "Use “Resync …” – or run in a terminal: onedrive --sync --resync"
+msgstr ""
+
+#: extension.js:893
+#, javascript-format
+msgid "Exited with status %s (%s)"
+msgstr ""
+
+#: extension.js:910
+#, javascript-format
+msgid "OneDrive: %s"
+msgstr ""
+
+#: extension.js:916
+#, javascript-format
+msgid "Last sync: %s"
+msgstr ""
+
+#: extension.js:923
+msgid "Pause"
+msgstr ""
+
+#: extension.js:923
+msgid "Start"
+msgstr ""
+
+#: extension.js:928
+msgid "Cancel Sign-in"
+msgstr ""
+
+#: extension.js:929
+msgid "Sign In Again …"
+msgstr ""
+
+#: extension.js:929
+msgid "Sign In …"
+msgstr ""
+
+#: extension.js:950
+msgid "Sign In to OneDrive Again"
+msgstr ""
+
+#: extension.js:950 auth-window.js:47
+msgid "Sign In to OneDrive"
+msgstr ""
+
+#: extension.js:952
+msgid "OneDrive will be stopped briefly."
+msgstr ""
+
+#: extension.js:953
+msgid "The current sign-in will be discarded."
+msgstr ""
+
+#: extension.js:954
+msgid ""
+"After “Continue”, a separate sign-in window with the Microsoft sign-in "
+"opens. It closes by itself once you have signed in."
+msgstr ""
+
+#: extension.js:990
+msgid "Resync OneDrive"
+msgstr ""
+
+#: extension.js:992
+msgid ""
+"The client requires a resync. The local sync database is discarded and "
+"rebuilt, and all files online and locally are compared again. Depending on "
+"the amount of data, this may take a while."
+msgstr ""
+
+#: extension.js:995
+msgid ""
+"No files are deleted. If a file differs locally and online, the client keeps "
+"both versions (the local one as a backup copy)."
+msgstr ""
+
+#: extension.js:997
+msgid ""
+"The resync runs independently of the shell as a separate systemd unit; "
+"afterwards OneDrive continues as usual."
+msgstr ""
+
+#: extension.js:1000
+msgid "Start Resync"
+msgstr ""
+
+#: extension.js:1011
+msgid "OneDrive is running – resync only when the client asks for it."
+msgstr ""
+
+#: extension.js:1022
+msgid "systemd-run failed."
+msgstr ""
+
+#: extension.js:1036
+msgid "Resync finished, OneDrive is running again."
+msgstr ""
+
+#: extension.js:1037
+msgid "Resync failed – see “Recent Messages”."
+msgstr ""
+
+#: prefs.js:16
+msgid "Menu"
+msgstr ""
+
+#: prefs.js:24
+#, javascript-format
+msgid "Number of entries shown (at most %s)"
+msgstr ""
+
+#: auth-window.js:80
+#, javascript-format
+msgid "Microsoft reports: %s – %s"
+msgstr ""

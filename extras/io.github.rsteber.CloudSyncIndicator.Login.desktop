@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Sign In (Cloud Sync Indicator)
+Name[de]=Anmeldung (Cloud Sync Indicator)
+Comment=Sign-in window of the GNOME extension Cloud Sync Indicator
+Comment[de]=Anmeldefenster der GNOME-Erweiterung Cloud Sync Indicator
+Icon=io.github.rsteber.CloudSyncIndicator.Login
+Exec=false
+NoDisplay=true
+StartupWMClass=io.github.rsteber.CloudSyncIndicator.Login

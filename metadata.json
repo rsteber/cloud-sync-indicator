@@ -1,0 +1,11 @@
+{
+  "uuid": "cloud-sync-indicator@rsteber.github.io",
+  "name": "Cloud Sync Indicator",
+  "description": "Status indicator for the “OneDrive Client for Linux” (abraunegg) running as a systemd user service: status, recent messages, pause/start, resync and sign-in through a dedicated sign-in window.\n\nClipboard access: only if the sign-in window is not used, the sign-in response address can be read from the clipboard by clicking “Sign in from clipboard”. It is passed only to the local client.\n\nNot an official product; not affiliated with Microsoft. OneDrive is a trademark of Microsoft.",
+  "shell-version": [
+    "48"
+  ],
+  "settings-schema": "org.gnome.shell.extensions.cloud-sync-indicator",
+  "gettext-domain": "cloud-sync-indicator",
+  "url": "https://github.com/rsteber/cloud-sync-indicator"
+}

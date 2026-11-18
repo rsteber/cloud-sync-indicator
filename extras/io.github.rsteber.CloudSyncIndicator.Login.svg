@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="cloud" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <linearGradient id="lock" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#deddda"/>
+    </linearGradient>
+  </defs>
+  <!-- Wolke -->
+  <path d="M34 98 C18 98 8 87 8 73 C8 60 17 50 30 48 C33 31 47 20 64 20 C80 20 93 30 97 45
+           C112 46 122 57 122 72 C122 87 111 98 96 98 Z"
+        fill="url(#cloud)" stroke="#1a5fb4" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Schloss -->
+  <path d="M52 64 V56 C52 49 57 44 64 44 C71 44 76 49 76 56 V64"
+        fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round"/>
+  <rect x="44" y="62" width="40" height="32" rx="6" fill="url(#lock)" stroke="#9a9996" stroke-width="2"/>
+  <circle cx="64" cy="75" r="5" fill="#1a5fb4"/>
+  <rect x="61.5" y="77" width="5" height="10" rx="2.5" fill="#1a5fb4"/>
+</svg>

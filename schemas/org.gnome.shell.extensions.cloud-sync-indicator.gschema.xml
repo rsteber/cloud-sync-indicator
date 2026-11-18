@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.cloud-sync-indicator" path="/org/gnome/shell/extensions/cloud-sync-indicator/">
+    <key name="log-entries" type="i">
+      <range min="1" max="30"/>
+      <default>12</default>
+      <summary>Number of entries under “Recent Messages”</summary>
+      <description>How many of the latest client messages (without routine lines) the menu shows. At most 30 so that the menu fits on the screen.</description>
+    </key>
+  </schema>
+</schemalist>
