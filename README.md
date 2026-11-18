@@ -54,8 +54,8 @@ GNOME assigns window icons through a desktop file. An extension must not create 
 its own directory, so if you want the icon, copy it yourself:
 
 ```bash
-cp extras/io.github.rsteber.CloudSyncIndicator.Login.desktop ~/.local/share/applications/
-cp extras/io.github.rsteber.CloudSyncIndicator.Login.svg ~/.local/share/icons/hicolor/scalable/apps/
+cp extras/dev.steber.CloudSyncIndicator.Login.desktop ~/.local/share/applications/
+cp extras/dev.steber.CloudSyncIndicator.Login.svg ~/.local/share/icons/hicolor/scalable/apps/
 ```
 
 ## Known quirks of the client (2.5.4)

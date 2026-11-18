@@ -41,7 +41,7 @@ if (!authUrl?.startsWith('https://login.microsoftonline.com/') || !responseFile)
 const REDIRECT = /^https:\/\/login\.microsoftonline\.com\/[^/]+\/oauth2\/nativeclient\?/;
 let exitCode = EXIT_CLOSED;
 
-const app = new Adw.Application({application_id: 'io.github.rsteber.CloudSyncIndicator.Login'});
+const app = new Adw.Application({application_id: 'dev.steber.CloudSyncIndicator.Login'});
 
 app.connect('activate', () => {
     const title = new Adw.WindowTitle({title: _('Sign In to OneDrive'), subtitle: ''});
