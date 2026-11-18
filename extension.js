@@ -299,6 +299,8 @@ class AuthFlow {
         await this._removeFiles();
     }
 
+    // auth-window.js is not imported: WebKitGTK cannot be loaded into the shell process,
+    // so it runs as a separate GJS process.
     async _runLoginWindow() {
         const script = GLib.build_filenamev([this._indicator.extensionPath, 'auth-window.js']);
         let win;
@@ -357,6 +359,8 @@ class AuthFlow {
             ]);
     }
 
+    // Clipboard access (declared in metadata.json): read once, only when the user picks
+    // "Sign in from clipboard"; the text is only passed to the local client.
     fromClipboard() {
         St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (_clipboard, text) => {
             const response = (text ?? '').trim();
@@ -517,6 +521,8 @@ class SyncIndicator extends PanelMenu.Button {
         this._authHint = null;
         this._journal = null;
         this._confMonitor = null;
+        this._confMonitorId = 0;
+        this._menuOpenId = 0;
         this._signalIds = [];
         this._sources = new Map(); // name → GLib source, see _schedule()
 
@@ -589,7 +595,7 @@ class SyncIndicator extends PanelMenu.Button {
         this._logSection = new PopupMenu.PopupMenuSection();
         this._logMenu.menu.addMenuItem(this._logSection);
 
-        this.menu.connect('open-state-changed', (_menu, open) => {
+        this._menuOpenId = this.menu.connect('open-state-changed', (_menu, open) => {
             if (open)
                 this._fillLog();
         });
@@ -837,7 +843,7 @@ class SyncIndicator extends PanelMenu.Button {
         try {
             this._confMonitor = Gio.File.new_for_path(CONF_DIR).monitor_directory(
                 Gio.FileMonitorFlags.WATCH_MOVES, null);
-            this._confMonitor.connect('changed', (_monitor, file, other, event) => {
+            this._confMonitorId = this._confMonitor.connect('changed', (_monitor, file, other, event) => {
                 const names = [file?.get_basename(), other?.get_basename()];
                 if (names.includes('refresh_token'))
                     this._checkToken();
@@ -1066,8 +1072,14 @@ class SyncIndicator extends PanelMenu.Button {
         for (const id of this._sources.values())
             GLib.source_remove(id);
         this._sources.clear();
+        if (this._confMonitorId)
+            this._confMonitor.disconnect(this._confMonitorId);
         this._confMonitor?.cancel();
         this._confMonitor = null;
+        this._confMonitorId = 0;
+        if (this._menuOpenId)
+            this.menu.disconnect(this._menuOpenId);
+        this._menuOpenId = 0;
         for (const id of this._signalIds)
             Gio.DBus.session.signal_unsubscribe(id);
         this._signalIds = [];
