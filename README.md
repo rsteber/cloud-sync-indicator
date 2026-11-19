@@ -19,6 +19,8 @@ running as a systemd user service (`onedrive.service`).
   response address from the clipboard.
 - **Resync:** when the client requires one (exit status 126), it can be started from the menu.
   It runs as a separate systemd unit and starts the service again afterwards.
+- **Several accounts:** every client instance set up as its own systemd user unit is found
+  automatically (see [Several accounts](#several-accounts)).
 - **Notice after configuration changes:** the client reads its configuration only at startup;
   after saving, a notification offers to restart it.
 - **Languages:** English and German.
@@ -38,9 +40,60 @@ running as a systemd user service (`onedrive.service`).
   of the sign-in. The content is passed only to the local client.
 - **Sign-in window:** an ephemeral WebKit session without stored cookies or data. It passes
   only the response address (`…/nativeclient?code=…`) to the client, through a file in
-  `$XDG_RUNTIME_DIR/cloud-sync-indicator-auth/` that is deleted afterwards.
+  `$XDG_RUNTIME_DIR/cloud-sync-indicator-auth-<account>/` that is deleted afterwards.
+  After a successful sign-in it also reports the address typed into the Microsoft sign-in
+  form; the extension stores it in its settings (`login-names`) and shows it as the
+  account's name in the menu. The password is never read.
 - No telemetry. The extension itself does not access the network; only the sign-in window
   loads the Microsoft sign-in page.
+
+## Several accounts
+
+The client handles one account per instance: each needs its own configuration directory
+(`--confdir`), its own `sync_dir`, and its own systemd user unit. The extension finds every
+user unit named `onedrive*.service` whose `ExecStart` runs `onedrive --monitor`, and takes
+the configuration directory from `--confdir`. Units added later are found after
+`systemctl --user daemon-reload`.
+
+Example for a second account, following the client's documentation:
+
+```bash
+mkdir -p ~/.config/onedrive-work
+echo 'sync_dir = "~/OneDrive-Work"' > ~/.config/onedrive-work/config
+```
+
+`~/.config/systemd/user/onedrive-work.service`:
+
+```ini
+[Unit]
+Description=OneDrive Client for Linux (work)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/onedrive --monitor --disable-notifications --confdir="/home/USER/.config/onedrive-work"
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=126
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable onedrive-work.service
+```
+
+Then sign in using the account's entry in the menu. `--disable-notifications` leaves
+notifications to the extension; setting `disable_notifications` in the configuration file
+instead makes client 2.5.4 require a resync.
+
+With more than one account, each account has its own submenu, the top bar shows the account
+that most needs attention, and recent messages are listed together, each with the account's
+name. The name is the address used to sign in, or one you set in the preferences. The
+client's own `onedrive.service` is left out when it is unused and other accounts exist.
 
 ## Why a dedicated sign-in window?
 

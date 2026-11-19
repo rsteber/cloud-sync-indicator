@@ -221,6 +221,7 @@ class AuthFlow {
         this._clientExited = false;
         this._loginWin = null;
         this._authUrl = null;
+        this._loginName = null;
         this._notification = null;
         this._wasRunning = false;
         this._ended = false;
@@ -256,7 +257,8 @@ class AuthFlow {
                 Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE |
                 Gio.SubprocessFlags.STDERR_MERGE);
             this._clientDone = this._client.communicate_utf8_async(null, this._cancellable)
-                .then(([, out]) => out ?? '')
+                // The promise resolves to [stdout, stderr] (without the boolean result).
+                .then(([out]) => out ?? '')
                 .finally(() => (this._clientExited = true));
             this._clientDone.catch(() => {});
 
@@ -295,15 +297,16 @@ class AuthFlow {
         const script = GLib.build_filenamev([this._account.extensionPath, 'auth-window.js']);
         let win;
         try {
+            // stdout: only the "login-name:" line; stderr: error messages.
             win = Gio.Subprocess.new(['gjs', '-m', script, this._authUrl, this._respFile],
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
         } catch (e) {
             this._useBrowser(fmt(_('The sign-in window could not be started (%s).'), e.message));
             return;
         }
         this._loginWin = win;
         this._account.setAuthHint(_('Sign in using the sign-in window'));
-        const [, output] = await win.communicate_utf8_async(null, this._cancellable);
+        const [stdout, output] = await win.communicate_utf8_async(null, this._cancellable);
         if (this._loginWin !== win)
             return; // cancelled
         this._loginWin = null;
@@ -312,6 +315,7 @@ class AuthFlow {
         // get_exit_status() is only valid after a normal exit, not after a signal.
         switch (win.get_if_exited() ? win.get_exit_status() : -1) {
         case LOGIN_OK:
+            this._loginName = stdout?.match(/^login-name: ([^\s@]+@[^\s@]+)$/m)?.[1] ?? null;
             await this._finish();
             break;
         case LOGIN_REJECTED:
@@ -379,7 +383,7 @@ class AuthFlow {
             ]);
             if (!await this._tokenWrittenSince(started))
                 throw new Error(lastLines(output) || _('No sign-in token was saved.'));
-            this._account.authSucceeded();
+            this._account.authSucceeded(this._loginName);
             Main.notify(this._account.title, _('Signed in. Restarting OneDrive.'));
             await this._end(true);
         } catch (e) {
@@ -556,6 +560,10 @@ class Account {
         return this._indicator.titleFor(this);
     }
 
+    get name() {
+        return this._indicator.nameFor(this);
+    }
+
     start() {
         this._watchConfDir();
         this._initDBus().catch(e => this._dbusFailed(e));
@@ -596,17 +604,7 @@ class Account {
     // --- systemd -----------------------------------------------------------
 
     async _initDBus() {
-        // Without Subscribe, systemd sends no PropertiesChanged signals. There is no Unsubscribe
-        // in disable(), because the subscription belongs to the shell's shared D-Bus connection.
-        // For the same reason it is still active when the extension is enabled again (e.g. after
-        // the screen was locked, or for a second account), and systemd then answers
-        // "AlreadySubscribed".
-        try {
-            await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null);
-        } catch (e) {
-            if (!Gio.DBusError.get_remote_error(e)?.endsWith('.AlreadySubscribed'))
-                throw e;
-        }
+        // The indicator has already called Subscribe (see SyncIndicator._initDBus()).
         const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
             new GLib.Variant('(s)', [this.unit]), '(o)')).deepUnpack();
         if (this._cancellable.is_cancelled())
@@ -813,7 +811,7 @@ class Account {
         if (this.resyncRunning)
             return ['resyncing', _('Rebuilding the local database – this may take a while')];
         if (!this.hasToken || this.authError)
-            return ['auth', _('Sign in again via “Sign In …”')];
+            return ['auth', _('Sign in again via “Sign In”')];
 
         switch (p.active) {
         case 'active':
@@ -829,7 +827,7 @@ class Account {
             return ['stopping', null];
         case 'failed':
             if (p.status === 126)
-                return ['resync', _('Use “Resync …” – or run in a terminal: onedrive --sync --resync')];
+                return ['resync', _('Use “Resync” – or run in a terminal: onedrive --sync --resync')];
             // The client exits with status 15 on SIGTERM – a normal stop.
             if (p.status === 15 || p.result === 'success')
                 return ['paused', null];
@@ -897,8 +895,11 @@ class Account {
         this._changed();
     }
 
-    authSucceeded() {
+    // loginName: the address typed into the sign-in window, if known.
+    authSucceeded(loginName) {
         this.authError = false;
+        if (loginName)
+            this._indicator.setLoginName(this, loginName);
     }
 
     // --- Resync ------------------------------------------------------------
@@ -936,7 +937,7 @@ class Account {
                 '/bin/sh', '-c', 'unit=$1; shift; "$0" "$@" && exec systemctl --user start "$unit"',
                 onedrive, this.unit, '--sync', '--resync', '--resync-auth', ...this.clientArgs,
             ], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
-            const [, out] = await proc.communicate_utf8_async(null, this._cancellable);
+            const [out] = await proc.communicate_utf8_async(null, this._cancellable);
             if (!proc.get_successful())
                 throw new Error(lastLines(out) || _('systemd-run failed.'));
             this.resyncRunning = true;
@@ -975,6 +976,169 @@ class Account {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Account discovery: every systemd user unit named onedrive*.service whose ExecStart runs
+// `onedrive --monitor` is an account; its config directory comes from --confdir. This is
+// how the client's documentation sets up several accounts, so units created by hand are
+// found as well.
+
+const UNIT_PATTERN = 'onedrive*.service';
+
+function parseExecStart(execStart) {
+    for (const [path, argv] of execStart ?? []) {
+        if (GLib.path_get_basename(path) !== 'onedrive' ||
+            !argv.some(arg => arg === '--monitor' || arg === '-m'))
+            continue;
+        let dir = null;
+        for (let i = 1; i < argv.length; i++) {
+            if (argv[i] === '--confdir')
+                dir = argv[i + 1] ?? null;
+            else if (argv[i].startsWith('--confdir='))
+                dir = argv[i].slice('--confdir='.length);
+        }
+        if (!dir)
+            return {confDir: DEFAULT_CONF_DIR, clientArgs: []};
+        if (dir.startsWith('~'))
+            dir = GLib.get_home_dir() + dir.slice(1);
+        dir = Gio.File.new_for_path(dir).get_path(); // normalised, e.g. without a trailing /
+        return {confDir: dir, clientArgs: ['--confdir', dir]};
+    }
+    return null;
+}
+
+async function findAccounts() {
+    const [files] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ListUnitFilesByPatterns',
+        new GLib.Variant('(asas)', [[], [UNIT_PATTERN]]), '(a(ss))')).deepUnpack();
+    // Loaded units as well: instances of a template unit have no unit file of their own.
+    const [loaded] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ListUnitsByPatterns',
+        new GLib.Variant('(asas)', [[], [UNIT_PATTERN]]), '(a(ssssssouso))')).deepUnpack();
+    const fileStates = new Map(files.map(([path, state]) => [GLib.path_get_basename(path), state]));
+    const activeStates = new Map(loaded.map(u => [u[0], u[3]]));
+    const units = [...new Set([...fileStates.keys(), ...activeStates.keys()])]
+        .filter(unit => !unit.includes('@.')) // a template itself is not an account
+        .sort();
+
+    const found = [];
+    for (const unit of units) {
+        const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
+            new GLib.Variant('(s)', [unit]), '(o)')).deepUnpack();
+        const {ExecStart} = await getProps(path, 'org.freedesktop.systemd1.Service', ['ExecStart']);
+        const spec = parseExecStart(ExecStart);
+        if (!spec)
+            continue;
+        const used = (fileStates.get(unit) ?? '').startsWith('enabled') ||
+            ['active', 'activating', 'reloading', 'failed'].includes(activeStates.get(unit)) ||
+            await exists(GLib.build_filenamev([spec.confDir, 'refresh_token']));
+        found.push({unit, used, ...spec});
+    }
+
+    // Units with the same config directory are one account: keep the one in use.
+    const accounts = [];
+    for (const spec of [...found.filter(s => s.used), ...found.filter(s => !s.used)]) {
+        if (!accounts.some(a => a.confDir === spec.confDir))
+            accounts.push(spec);
+    }
+    // The client's packaged onedrive.service is left out when it is unused and other accounts
+    // exist. Without any account it is always listed: the menu then offers the first sign-in,
+    // or reports that the client is not installed.
+    const result = accounts
+        .filter(a => a.used || a.unit !== DEFAULT_UNIT || accounts.length === 1)
+        .sort((a, b) => (b.unit === DEFAULT_UNIT) - (a.unit === DEFAULT_UNIT) ||
+            a.unit.localeCompare(b.unit));
+    return result.length ? result : [{unit: DEFAULT_UNIT, confDir: DEFAULT_CONF_DIR, clientArgs: []}];
+}
+
+// ---------------------------------------------------------------------------
+// Menu items of one account. With a single account they are placed directly in the menu,
+// as before; with several, each account gets a submenu with its actions, and its details
+// below it.
+
+function detailItem() {
+    const item = new PopupMenu.PopupMenuItem('', {reactive: false, style_class: 'cloud-sync-log-item'});
+    item.label.clutter_text.ellipsize = Pango.EllipsizeMode.MIDDLE;
+    item.label.style = 'max-width: 36em;';
+    return item;
+}
+
+class AccountView {
+    constructor(account, section, single) {
+        this.account = account;
+        this._single = single;
+        let actions;
+        if (single) {
+            this._status = new PopupMenu.PopupImageMenuItem('', STATES.unknown.icon, {reactive: false});
+            section.addMenuItem(this._status);
+            this._detail = detailItem();
+            section.addMenuItem(this._detail);
+            section.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            actions = section;
+        } else {
+            this._sub = new PopupMenu.PopupSubMenuMenuItem('', true);
+            section.addMenuItem(this._sub);
+            this._detail = detailItem();
+            section.addMenuItem(this._detail);
+            actions = this._sub.menu;
+        }
+
+        actions.addAction(_('Open OneDrive Folder'), () => account.openFolder(), 'folder-symbolic');
+        actions.addAction(_('Edit Configuration'), () => account.editConfig(), 'document-edit-symbolic');
+        actions.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._toggleItem = actions.addAction('', () => account.toggleService(),
+            'media-playback-pause-symbolic');
+        this._resyncItem = actions.addAction(_('Resync'), () => account.resyncAction(),
+            'view-refresh-symbolic');
+        this._restartItem = actions.addAction(_('Restart'), () => account.restartService(),
+            'system-reboot-symbolic');
+        this._clipItem = actions.addAction(_('Sign in from clipboard'),
+            () => account.auth?.fromClipboard(), 'edit-paste-symbolic');
+        this._authItem = actions.addAction('', () => account.authAction(), 'dialog-password-symbolic');
+    }
+
+    // Returns the account's state as [key, hint].
+    update() {
+        const account = this.account;
+        const [key, hint] = account.computeState();
+        const state = STATES[key];
+        const stateText = _(state.text);
+
+        if (this._single) {
+            this._status.label.text = fmt(_('OneDrive: %s'), stateText);
+            this._status.setIcon(state.icon);
+        } else {
+            this._sub.label.text = `${account.name}: ${stateText}`;
+            this._sub.icon.icon_name = state.icon;
+        }
+        const details = [];
+        if (hint)
+            details.push(hint);
+        if (account.lastSync)
+            details.push(fmt(_('Last sync: %s'), formatTime(account.lastSync)));
+        if (account.lastActivity)
+            details.push(`${formatTime(account.lastActivity.time)}  ${account.lastActivity.msg}`);
+        this._detail.label.text = details.join('\n') || ' ';
+        // A detail line without content only takes up space below a submenu.
+        this._detail.visible = this._single || details.length > 0;
+
+        const known = !!account.props.active;
+        this._toggleItem.label.text = account.running ? _('Pause') : _('Start');
+        this._toggleItem.setIcon(account.running ? 'media-playback-pause-symbolic'
+            : 'media-playback-start-symbolic');
+        this._toggleItem.visible = known && !account.resyncRunning;
+        this._restartItem.visible = known && account.props.active !== 'inactive' && !account.resyncRunning;
+        this._resyncItem.visible = key === 'resync';
+        this._authItem.label.text = account.auth ? _('Cancel Sign-in')
+            : account.hasToken ? _('Sign In Again') : _('Sign In');
+        this._authItem.setIcon(account.auth ? 'process-stop-symbolic' : 'dialog-password-symbolic');
+        this._clipItem.visible = !!account.auth?.waitingForClipboard;
+        return [key, hint];
+    }
+}
+
+// The panel icon shows the account that most needs attention.
+const SEVERITY = ['error', 'resync', 'auth', 'offline', 'unknown', 'resyncing', 'paused',
+    'starting', 'stopping', 'syncing', 'ok'];
+
 // ---------------------------------------------------------------------------
 // Panel indicator
 
@@ -989,9 +1153,16 @@ class SyncIndicator extends PanelMenu.Button {
         this._cancellable = new Gio.Cancellable();
         this._timers = new Timers();
         this._decoder = new TextDecoder();
+        this._accounts = [];
+        this._views = [];
+        this._discovered = false;
+        this._dbusSignalIds = [];
         this._replaying = false;
         this._journal = null;
+        this._journalCancellable = null;
         this._menuOpenId = 0;
+        this._settingsIds = ['account-names', 'login-names'].map(key =>
+            this._settings.connect(`changed::${key}`, () => this._update()));
 
         // Compact like AppIndicator icons in their “compact mode”.
         this.set_style('-natural-hpadding: 10px');
@@ -1003,54 +1174,104 @@ class SyncIndicator extends PanelMenu.Button {
         this.add_child(this._icon);
 
         this._buildMenu();
-        this._accounts = [new Account(this, {
-            unit: DEFAULT_UNIT,
-            confDir: DEFAULT_CONF_DIR,
-            clientArgs: [],
-        })];
-        for (const account of this._accounts)
-            account.start();
-        this._startJournal();
+        this._rebuildViews();
+        this._update();
+        this._initDBus().catch(e => this._dbusFailed(e));
     }
 
-    // The single account for now.
-    get _account() {
-        return this._accounts[0];
+    // --- Accounts ----------------------------------------------------------
+
+    _dict(key) {
+        return this._settings.get_value(key).deepUnpack();
     }
 
-    titleFor(_account) {
-        return 'OneDrive';
+    nameFor(account) {
+        return this._dict('account-names')[account.unit] || this._dict('login-names')[account.unit] ||
+            (account.unit === DEFAULT_UNIT ? 'OneDrive'
+                : account.id.replace(/^onedrive[-_@]?/, '') || account.id);
+    }
+
+    titleFor(account) {
+        return this._accounts.length > 1 ? `OneDrive – ${this.nameFor(account)}` : 'OneDrive';
+    }
+
+    setLoginName(account, loginName) {
+        const names = this._dict('login-names');
+        names[account.unit] = loginName;
+        this._settings.set_value('login-names', new GLib.Variant('a{ss}', names));
     }
 
     accountChanged(_account) {
         this._update();
     }
 
+    async _initDBus() {
+        // Without Subscribe, systemd sends no signals. There is no Unsubscribe in disable(),
+        // because the subscription belongs to the shell's shared D-Bus connection. For the same
+        // reason it is still active when the extension is enabled again (e.g. after the screen
+        // was locked), and systemd then answers "AlreadySubscribed".
+        try {
+            await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null);
+        } catch (e) {
+            if (!Gio.DBusError.get_remote_error(e)?.endsWith('.AlreadySubscribed'))
+                throw e;
+        }
+        if (this._cancellable.is_cancelled())
+            return;
+        if (this._dbusSignalIds.length === 0) {
+            // Units enabled or disabled, or unit files added or removed (daemon-reload).
+            const rediscover = () => this._timers.schedule('discover', 1000, () =>
+                this._discover().catch(e => logError(e, 'cloud-sync-indicator: finding accounts')));
+            const bus = Gio.DBus.session;
+            this._dbusSignalIds = ['UnitFilesChanged', 'Reloading'].map(signal =>
+                bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, signal, MANAGER_PATH, null,
+                    Gio.DBusSignalFlags.NONE, rediscover));
+        }
+        await this._discover();
+    }
+
+    _dbusFailed(e) {
+        if (this._cancellable.is_cancelled())
+            return;
+        logError(e, 'cloud-sync-indicator: systemd not reachable');
+        // Setup did not finish: try again later instead of staying in "unknown".
+        if (!this._discovered) {
+            this._timers.schedule('dbus-retry', 30000, () =>
+                this._initDBus().catch(err => this._dbusFailed(err)));
+        }
+    }
+
+    // Keeps the Account objects of units that are still there, so their state is kept.
+    async _discover() {
+        const specs = await findAccounts();
+        if (this._cancellable.is_cancelled())
+            return;
+        this._discovered = true;
+        const key = a => `${a.unit}\n${a.confDir}`;
+        const old = new Map(this._accounts.map(a => [key(a), a]));
+        const next = specs.map(spec => old.get(key(spec)) ?? new Account(this, spec));
+        const added = next.filter(a => !this._accounts.includes(a));
+        const removed = this._accounts.filter(a => !next.includes(a));
+        if (added.length === 0 && removed.length === 0 &&
+            next.every((a, i) => a === this._accounts[i]))
+            return;
+
+        removed.forEach(a => a.destroy());
+        this._accounts = next;
+        const units = next.map(a => a.unit);
+        if (this._settings.get_strv('known-accounts').join('\n') !== units.join('\n'))
+            this._settings.set_strv('known-accounts', units);
+        this._rebuildViews();
+        added.forEach(a => a.start());
+        this._startJournal();
+        this._update();
+    }
+
+    // --- Menu --------------------------------------------------------------
+
     _buildMenu() {
-        this._statusItem = new PopupMenu.PopupImageMenuItem('', STATES.unknown.icon, {reactive: false});
-        this._detailItem = new PopupMenu.PopupMenuItem('', {reactive: false, style_class: 'cloud-sync-log-item'});
-        this._detailItem.label.clutter_text.ellipsize = Pango.EllipsizeMode.MIDDLE;
-        this._detailItem.label.style = 'max-width: 36em;';
-        this.menu.addMenuItem(this._statusItem);
-        this.menu.addMenuItem(this._detailItem);
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-        this.menu.addAction(_('Open OneDrive Folder'), () => this._account.openFolder(),
-            'folder-symbolic');
-        this.menu.addAction(_('Edit Configuration'), () => this._account.editConfig(),
-            'document-edit-symbolic');
-
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._toggleItem = this.menu.addAction('', () => this._account.toggleService(),
-            'media-playback-pause-symbolic');
-        this._resyncItem = this.menu.addAction(_('Resync …'), () => this._account.resyncAction(),
-            'view-refresh-symbolic');
-        this._restartItem = this.menu.addAction(_('Restart'), () => this._account.restartService(),
-            'system-reboot-symbolic');
-        this._clipItem = this.menu.addAction(_('Sign in from clipboard'),
-            () => this._account.auth?.fromClipboard(), 'edit-paste-symbolic');
-        this._authItem = this.menu.addAction('', () => this._account.authAction(),
-            'dialog-password-symbolic');
+        this._accountSection = new PopupMenu.PopupMenuSection();
+        this.menu.addMenuItem(this._accountSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._logMenu = new PopupMenu.PopupSubMenuMenuItem(_('Recent Messages'), true);
@@ -1067,6 +1288,21 @@ class SyncIndicator extends PanelMenu.Button {
         });
     }
 
+    _rebuildViews() {
+        this._accountSection.removeAll();
+        const single = this._accounts.length === 1;
+        this._views = this._accounts.map(a => new AccountView(a, this._accountSection, single));
+        if (this._accounts.length === 0) {
+            // Until systemd has answered.
+            const status = new PopupMenu.PopupImageMenuItem(
+                fmt(_('OneDrive: %s'), _(STATES.unknown.text)), STATES.unknown.icon, {reactive: false});
+            const detail = detailItem();
+            detail.label.text = _('systemd service not reachable');
+            this._accountSection.addMenuItem(status);
+            this._accountSection.addMenuItem(detail);
+        }
+    }
+
     _fillLog() {
         this._logSection.removeAll();
         const fileOps = this._settings.get_boolean('file-operations-only');
@@ -1076,9 +1312,12 @@ class SyncIndicator extends PanelMenu.Button {
             this._logSection.addMenuItem(new PopupMenu.PopupMenuItem(_('(none)'), {reactive: false}));
             return;
         }
+        const several = this._accounts.length > 1;
         const count = this._settings.get_int('log-entries');
-        for (const {time, msg} of log.slice(-count).reverse()) {
-            const item = new PopupMenu.PopupMenuItem(`${formatTime(time)}  ${msg}`,
+        for (const {time, msg, account} of log.slice(-count).reverse()) {
+            const text = several ? `${formatTime(time)}  ${account.name}: ${msg}`
+                : `${formatTime(time)}  ${msg}`;
+            const item = new PopupMenu.PopupMenuItem(text,
                 {reactive: false, style_class: 'cloud-sync-log-item'});
             item.label.clutter_text.ellipsize = Pango.EllipsizeMode.MIDDLE;
             item.label.style = 'max-width: 36em;';
@@ -1106,36 +1345,47 @@ class SyncIndicator extends PanelMenu.Button {
 
     // --- Journal -----------------------------------------------------------
 
-    // A single journalctl for all accounts.
+    // A single journalctl for all accounts; restarted when the accounts change.
     _startJournal() {
-        if (this._cancellable.is_cancelled())
+        this._journalCancellable?.cancel();
+        this._journalCancellable = null;
+        this._journal?.force_exit();
+        this._journal = null;
+        this._timers.unschedule('journal-retry');
+        if (this._cancellable.is_cancelled() || this._accounts.length === 0)
             return;
+
         // Older lines are replayed first (-n). No notifications meanwhile: they contain, for
         // example, sign-in errors that were resolved long ago.
         this._replaying = true;
         for (const account of this._accounts)
             account.resetJournalState();
         this._timers.schedule('replay-end', 1500, () => this._endReplay());
+        const cancellable = new Gio.Cancellable();
+        this._journalCancellable = cancellable;
         try {
             this._journal = Gio.Subprocess.new(
                 ['journalctl', '--user', ...this._journalUnitArgs(), '-f', '-n', '1000',
-                    '-o', 'short-iso', '--no-hostname'],
+                    '-o', 'json', '--output-fields=MESSAGE,USER_UNIT,_SYSTEMD_USER_UNIT'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
             const stream = new Gio.DataInputStream({base_stream: this._journal.get_stdout_pipe()});
-            this._readJournal(stream).catch(e => {
+            this._readJournal(stream, cancellable).catch(e => {
                 if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                     logError(e, 'cloud-sync-indicator: reading journal');
-            }).finally(() => this._journalEnded());
+            }).finally(() => {
+                if (this._journalCancellable === cancellable)
+                    this._journalEnded();
+            });
         } catch (e) {
             logError(e, 'cloud-sync-indicator: journalctl');
             this._journalEnded();
         }
     }
 
-    async _readJournal(stream) {
+    async _readJournal(stream, cancellable) {
         for (;;) {
             // Returns bytes, see promisifyAsyncMethods().
-            const [bytes] = await stream.read_line_async(GLib.PRIORITY_LOW, this._cancellable);
+            const [bytes] = await stream.read_line_async(GLib.PRIORITY_LOW, cancellable);
             if (bytes === null)
                 return;
             this._handleLine(this._decoder.decode(bytes));
@@ -1144,6 +1394,7 @@ class SyncIndicator extends PanelMenu.Button {
 
     _journalEnded() {
         this._journal = null;
+        this._journalCancellable = null;
         if (!this._cancellable.is_cancelled())
             this._timers.schedule('journal-retry', 10000, () => this._startJournal());
     }
@@ -1156,11 +1407,25 @@ class SyncIndicator extends PanelMenu.Button {
     }
 
     _handleLine(line) {
-        const m = line.match(/^(\S+)\s+[^:]+:\s?(.*)$/);
-        const msg = m?.[2].trim();
-        if (!msg)
+        let entry;
+        try {
+            entry = JSON.parse(line);
+        } catch {
             return;
-        this._account?.handleMessage(GLib.DateTime.new_from_iso8601(m[1], null), msg);
+        }
+        // journalctl writes a message that is not valid UTF-8 as an array of bytes.
+        let msg = entry.MESSAGE;
+        if (Array.isArray(msg))
+            msg = this._decoder.decode(new Uint8Array(msg));
+        msg = typeof msg === 'string' ? msg.trim() : '';
+        // Messages from systemd itself ("Started …") carry the unit in USER_UNIT.
+        const unit = entry.USER_UNIT ?? entry._SYSTEMD_USER_UNIT;
+        const account = this._accounts.find(a => a.unit === unit || a.resyncUnit === unit);
+        if (!msg || !account)
+            return;
+        // __REALTIME_TIMESTAMP: microseconds since the epoch, as a string.
+        const time = GLib.DateTime.new_from_unix_utc(0).add(Number(entry.__REALTIME_TIMESTAMP));
+        account.handleMessage(time, msg);
 
         if (this._replaying)
             this._timers.schedule('replay-end', 1500, () => this._endReplay());
@@ -1173,9 +1438,10 @@ class SyncIndicator extends PanelMenu.Button {
     _update() {
         if (this._cancellable.is_cancelled())
             return;
-        const account = this._account;
-        const [key, hint] = account.computeState();
-        const state = STATES[key];
+        const states = this._views.map(view => [view.account, ...view.update()]);
+        const keys = states.map(([, key]) => key)
+            .sort((a, b) => SEVERITY.indexOf(a) - SEVERITY.indexOf(b));
+        const state = STATES[keys[0] ?? 'unknown'];
 
         this._icon.icon_name = state.icon;
         this._icon.remove_style_class_name('cloud-sync-error');
@@ -1183,45 +1449,32 @@ class SyncIndicator extends PanelMenu.Button {
         if (state.style)
             this._icon.add_style_class_name(state.style);
 
-        const stateText = _(state.text);
-        this._statusItem.label.text = fmt(_('OneDrive: %s'), stateText);
-        this._statusItem.setIcon(state.icon);
-        const details = [];
-        if (hint)
-            details.push(hint);
-        if (account.lastSync)
-            details.push(fmt(_('Last sync: %s'), formatTime(account.lastSync)));
-        if (account.lastActivity)
-            details.push(`${formatTime(account.lastActivity.time)}  ${account.lastActivity.msg}`);
-        this._detailItem.label.text = details.join('\n') || ' ';
-
-        const known = !!account.props.active;
-        this._toggleItem.label.text = account.running ? _('Pause') : _('Start');
-        this._toggleItem.setIcon(account.running ? 'media-playback-pause-symbolic'
-            : 'media-playback-start-symbolic');
-        this._toggleItem.visible = known && !account.resyncRunning;
-        this._restartItem.visible = known && account.props.active !== 'inactive' && !account.resyncRunning;
-        this._resyncItem.visible = key === 'resync';
-        this._authItem.label.text = account.auth ? _('Cancel Sign-in')
-            : account.hasToken ? _('Sign In Again …') : _('Sign In …');
-        this._authItem.setIcon(account.auth ? 'process-stop-symbolic' : 'dialog-password-symbolic');
-        this._clipItem.visible = !!account.auth?.waitingForClipboard;
-
-        if (!this._replaying)
-            account.noteState(key, hint);
+        if (!this._replaying) {
+            for (const [account, key, hint] of states)
+                account.noteState(key, hint);
+        }
     }
 
     destroy() {
         this._cancellable.cancel();
+        this._journalCancellable?.cancel();
+        this._journalCancellable = null;
+        this._journal?.force_exit();
+        this._journal = null;
         for (const account of this._accounts)
             account.destroy();
         this._accounts = [];
+        this._views = [];
         this._timers.clear();
+        for (const id of this._dbusSignalIds)
+            Gio.DBus.session.signal_unsubscribe(id);
+        this._dbusSignalIds = [];
+        for (const id of this._settingsIds)
+            this._settings.disconnect(id);
+        this._settingsIds = [];
         if (this._menuOpenId)
             this.menu.disconnect(this._menuOpenId);
         this._menuOpenId = 0;
-        this._journal?.force_exit();
-        this._journal = null;
         super.destroy();
     }
 });

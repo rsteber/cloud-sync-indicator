@@ -12,5 +12,20 @@
       <summary>Show only file operations under “Recent Messages”</summary>
       <description>If set, only uploads, downloads, deletions, moves and created folders are listed. Otherwise all client messages except recurring routine lines are listed.</description>
     </key>
+    <key name="account-names" type="a{ss}">
+      <default>{}</default>
+      <summary>Account names</summary>
+      <description>Name shown in the menu for each account, by systemd unit. Without an entry, the address used to sign in is shown.</description>
+    </key>
+    <key name="login-names" type="a{ss}">
+      <default>{}</default>
+      <summary>Sign-in addresses</summary>
+      <description>The address last used to sign in to each account, by systemd unit. Set by the sign-in window.</description>
+    </key>
+    <key name="known-accounts" type="as">
+      <default>[]</default>
+      <summary>Accounts found</summary>
+      <description>The systemd units of the accounts the extension has found, for the preferences window.</description>
+    </key>
   </schema>
 </schemalist>

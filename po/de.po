@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: cloud-sync-indicator\n"
 "Report-Msgid-Bugs-To: https://github.com/rsteber/cloud-sync-indicator/"
 "issues\n"
-"POT-Creation-Date: 2026-11-19 08:02+0100\n"
+"POT-Creation-Date: 2026-11-19 08:56+0100\n"
 "PO-Revision-Date: 2026-11-18 15:15+0100\n"
 "Last-Translator: rsteber\n"
 "Language-Team: German\n"
@@ -17,110 +17,110 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: extension.js:62
+#: extension.js:58
 msgid "Up to date"
 msgstr "Synchronisiert"
 
-#: extension.js:63
+#: extension.js:59
 msgid "Syncing …"
 msgstr "Synchronisiert gerade …"
 
-#: extension.js:64
+#: extension.js:60
 msgid "Resync running …"
 msgstr "Neuabgleich läuft …"
 
-#: extension.js:65
+#: extension.js:61
 msgid "Starting …"
 msgstr "Startet …"
 
-#: extension.js:66
+#: extension.js:62
 msgid "Stopping …"
 msgstr "Wird angehalten …"
 
-#: extension.js:67
+#: extension.js:63
 msgid "Paused"
 msgstr "Angehalten"
 
-#: extension.js:68
+#: extension.js:64
 msgid "No connection to OneDrive"
 msgstr "Keine Verbindung zu OneDrive"
 
-#: extension.js:69
+#: extension.js:65
 msgid "Sign-in required"
 msgstr "Anmeldung erforderlich"
 
-#: extension.js:70
+#: extension.js:66
 msgid "Resync required"
 msgstr "Neuabgleich erforderlich"
 
-#: extension.js:71
+#: extension.js:67
 msgid "Error"
 msgstr "Fehler"
 
-#: extension.js:72
+#: extension.js:68
 msgid "Status unknown"
 msgstr "Zustand unbekannt"
 
 #. Translators: strftime formats for times today and on other days
-#: extension.js:162
+#: extension.js:151
 msgid "%H:%M"
 msgstr "%H:%M"
 
-#: extension.js:162
+#: extension.js:151
 msgid "%b %d, %H:%M"
 msgstr "%d.%m. %H:%M"
 
-#: extension.js:201
+#: extension.js:190
 msgid "Continue"
 msgstr "Weiter"
 
-#: extension.js:205 extension.js:358
+#: extension.js:194 extension.js:350
 msgid "Cancel"
 msgstr "Abbrechen"
 
-#: extension.js:250 extension.js:1044
+#: extension.js:241 extension.js:927
 msgid "The “onedrive” client is not installed."
 msgstr "Der Client „onedrive“ ist nicht installiert."
 
-#: extension.js:255
+#: extension.js:246
 msgid "Stopping OneDrive …"
 msgstr "OneDrive wird angehalten …"
 
-#: extension.js:264
+#: extension.js:255
 msgid "Requesting sign-in address …"
 msgstr "Anmeldeadresse wird erzeugt …"
 
-#: extension.js:275
+#: extension.js:266
 #, javascript-format
 msgid "The client exited early: %s"
 msgstr "Der Client hat sich vorzeitig beendet: %s"
 
-#: extension.js:277
+#: extension.js:268
 msgid "The client did not provide a sign-in address."
 msgstr "Der Client hat keine Anmeldeadresse geliefert."
 
-#: extension.js:283
+#: extension.js:274
 msgid "Unexpected content in the sign-in address file."
 msgstr "Unerwarteter Inhalt der Anmeldeadresse."
 
-#: extension.js:311
+#: extension.js:302
 #, javascript-format
 msgid "The sign-in window could not be started (%s)."
 msgstr "Das Anmeldefenster ließ sich nicht starten (%s)."
 
-#: extension.js:315
+#: extension.js:306
 msgid "Sign in using the sign-in window"
 msgstr "Im Anmeldefenster anmelden"
 
-#: extension.js:328
+#: extension.js:320
 msgid "Microsoft rejected the sign-in."
 msgstr "Microsoft hat die Anmeldung abgelehnt."
 
-#: extension.js:331
+#: extension.js:323
 msgid "Sign-in window closed."
 msgstr "Anmeldefenster geschlossen."
 
-#: extension.js:335
+#: extension.js:327
 msgid ""
 "The sign-in window could not be started (is WebKitGTK 6.0 for GJS "
 "installed?)."
@@ -128,16 +128,16 @@ msgstr ""
 "Das Anmeldefenster ließ sich nicht starten (WebKitGTK 6.0 für GJS "
 "installiert?)."
 
-#: extension.js:351
+#: extension.js:343
 msgid "Copy the response address from the browser"
 msgstr "Antwortadresse aus dem Browser kopieren"
 
-#: extension.js:352
+#: extension.js:344
 #, javascript-format
 msgid "%s Sign in using the browser"
 msgstr "%s Anmeldung im Browser"
 
-#: extension.js:353
+#: extension.js:345
 msgid ""
 "After signing in, copy the address of the blank page (…/nativeclient?code=…) "
 "– if the page redirects, it is in the browser history – then choose “Sign in "
@@ -147,80 +147,47 @@ msgstr ""
 "kopieren – springt die Seite weiter, steht sie im Browserverlauf – und dann "
 "„Aus Zwischenablage anmelden“ wählen (auch im Menü des Symbols)."
 
-#: extension.js:357 extension.js:585
+#: extension.js:349 extension.js:1091
 msgid "Sign in from clipboard"
 msgstr "Aus Zwischenablage anmelden"
 
-#: extension.js:368
+#: extension.js:360
 msgid "The clipboard does not contain a response address with “code=”."
 msgstr "Keine Antwortadresse mit „code=“ in der Zwischenablage."
 
-#: extension.js:380
+#: extension.js:372
 msgid "Completing sign-in …"
 msgstr "Anmeldung wird abgeschlossen …"
 
-#: extension.js:387
+#: extension.js:379
 msgid "Timed out while completing sign-in."
 msgstr "Zeitüberschreitung beim Abschluss der Anmeldung."
 
-#: extension.js:391
+#: extension.js:383
 msgid "No sign-in token was saved."
 msgstr "Es wurde kein Anmeldeschlüssel gespeichert."
 
-#: extension.js:393
+#: extension.js:385
 msgid "Signed in. Restarting OneDrive."
 msgstr "Angemeldet. OneDrive wird wieder gestartet."
 
-#: extension.js:415
+#: extension.js:407
 msgid "OneDrive: sign-in failed"
 msgstr "OneDrive: Anmeldung fehlgeschlagen"
 
-#: extension.js:423
+#: extension.js:415
 msgid "Sign-in cancelled."
 msgstr "Anmeldung abgebrochen."
 
-#: extension.js:571
-msgid "Open OneDrive Folder"
-msgstr "OneDrive-Ordner öffnen"
-
-#: extension.js:574
-msgid "Edit Configuration"
-msgstr "Konfiguration bearbeiten"
-
-#: extension.js:581
-msgid "Resync …"
-msgstr "Neu abgleichen …"
-
-#: extension.js:583
-msgid "Restart"
-msgstr "Neu starten"
-
-#: extension.js:590 prefs.js:23
-msgid "Recent Messages"
-msgstr "Letzte Meldungen"
-
-#: extension.js:593
-msgid "Full Log in Terminal"
-msgstr "Vollständiges Protokoll im Terminal"
-
-#: extension.js:608
-msgid "(none)"
-msgstr "(keine)"
-
-#: extension.js:631
-#, javascript-format
-msgid "No terminal found. Command: %s"
-msgstr "Kein Terminal gefunden. Befehl: %s"
-
-#: extension.js:743
+#: extension.js:687
 msgid "OneDrive could not be stopped."
 msgstr "OneDrive ließ sich nicht anhalten."
 
-#: extension.js:887
+#: extension.js:791
 msgid "OneDrive configuration changed"
 msgstr "OneDrive-Konfiguration geändert"
 
-#: extension.js:888
+#: extension.js:792
 msgid ""
 "The change takes effect after the client restarts. Version 2.5.4 then "
 "usually requires a resync."
@@ -228,96 +195,66 @@ msgstr ""
 "Die Änderung wirkt erst nach einem Neustart des Clients. Version 2.5.4 "
 "verlangt danach meist einen Neuabgleich."
 
-#: extension.js:891
+#: extension.js:795
 msgid "Restart Now"
 msgstr "Jetzt neu starten"
 
-#: extension.js:900
+#: extension.js:804 extension.js:1298
 msgid "systemd service not reachable"
 msgstr "systemd-Dienst nicht erreichbar"
 
-#: extension.js:902
+#: extension.js:806
 #, javascript-format
 msgid "%s is not installed"
 msgstr "%s ist nicht installiert"
 
-#: extension.js:904
+#: extension.js:808
 msgid "Signing in …"
 msgstr "Anmeldung läuft …"
 
-#: extension.js:906
+#: extension.js:810
 msgid "Rebuilding the local database – this may take a while"
 msgstr "Lokale Datenbank wird neu aufgebaut – das kann dauern"
 
-#: extension.js:908
-msgid "Sign in again via “Sign In …”"
-msgstr "Über „Anmelden …“ neu anmelden"
+#: extension.js:812
+msgid "Sign in again via “Sign In”"
+msgstr "Über „Anmelden“ neu anmelden"
 
-#: extension.js:914
+#: extension.js:818
 msgid "The client keeps retrying"
 msgstr "Der Client versucht es weiter"
 
-#: extension.js:918
+#: extension.js:822
 #, javascript-format
 msgid "Restarting repeatedly (%s×) – see recent messages"
 msgstr "Startet wiederholt neu (%s×) – siehe „Letzte Meldungen“"
 
-#: extension.js:924
-msgid "Use “Resync …” – or run in a terminal: onedrive --sync --resync"
-msgstr "Über „Neu abgleichen …“ – oder im Terminal: onedrive --sync --resync"
+#: extension.js:828
+msgid "Use “Resync” – or run in a terminal: onedrive --sync --resync"
+msgstr "Über „Neu abgleichen“ – oder im Terminal: onedrive --sync --resync"
 
-#: extension.js:928
+#: extension.js:832
 #, javascript-format
 msgid "Exited with status %s (%s)"
 msgstr "Beendet mit Status %s (%s)"
 
-#: extension.js:945
-#, javascript-format
-msgid "OneDrive: %s"
-msgstr "OneDrive: %s"
-
-#: extension.js:951
-#, javascript-format
-msgid "Last sync: %s"
-msgstr "Letzte Synchronisation: %s"
-
-#: extension.js:958
-msgid "Pause"
-msgstr "Anhalten"
-
-#: extension.js:958
-msgid "Start"
-msgstr "Starten"
-
-#: extension.js:963
-msgid "Cancel Sign-in"
-msgstr "Anmeldung abbrechen"
-
-#: extension.js:964
-msgid "Sign In Again …"
-msgstr "Neu anmelden …"
-
-#: extension.js:964
-msgid "Sign In …"
-msgstr "Anmelden …"
-
-#: extension.js:985
+#: extension.js:866
 msgid "Sign In to OneDrive Again"
 msgstr "Bei OneDrive neu anmelden"
 
-#: extension.js:985 auth-window.js:47
+#: extension.js:866 auth-window.js:58
 msgid "Sign In to OneDrive"
 msgstr "Bei OneDrive anmelden"
 
-#: extension.js:987
+#: extension.js:868
 msgid "OneDrive will be stopped briefly."
 msgstr "OneDrive wird dafür kurz angehalten."
 
-#: extension.js:988
+#: extension.js:869
 msgid "The current sign-in will be discarded."
 msgstr "Die bisherige Anmeldung wird dabei verworfen."
 
-#: extension.js:989
+#: extension.js:870
 msgid ""
 "After “Continue”, a separate sign-in window with the Microsoft sign-in "
 "opens. It closes by itself once you have signed in."
@@ -325,11 +262,11 @@ msgstr ""
 "Nach „Weiter“ öffnet sich ein eigenes Anmeldefenster mit der Microsoft-"
 "Anmeldung. Es schließt sich nach der Anmeldung von selbst."
 
-#: extension.js:1025
+#: extension.js:908
 msgid "Resync OneDrive"
 msgstr "OneDrive neu abgleichen"
 
-#: extension.js:1027
+#: extension.js:910
 msgid ""
 "The client requires a resync. The local sync database is discarded and "
 "rebuilt, and all files online and locally are compared again. Depending on "
@@ -340,7 +277,7 @@ msgstr ""
 "und lokal werden neu abgeglichen. Das kann je nach Datenmenge eine Weile "
 "dauern."
 
-#: extension.js:1030
+#: extension.js:913
 msgid ""
 "No files are deleted. If a file differs locally and online, the client keeps "
 "both versions (the local one as a backup copy)."
@@ -348,7 +285,7 @@ msgstr ""
 "Dateien werden dabei nicht gelöscht. Unterscheidet sich eine Datei lokal und "
 "online, behält der Client beide Fassungen (die lokale als Sicherungskopie)."
 
-#: extension.js:1032
+#: extension.js:915
 msgid ""
 "The resync runs independently of the shell as a separate systemd unit; "
 "afterwards OneDrive continues as usual."
@@ -356,48 +293,122 @@ msgstr ""
 "Der Lauf geschieht unabhängig von der Shell als eigene systemd-Einheit; "
 "danach startet OneDrive normal weiter."
 
-#: extension.js:1035
+#: extension.js:918
 msgid "Start Resync"
 msgstr "Neuabgleich starten"
 
-#: extension.js:1046
+#: extension.js:929
 msgid "OneDrive is running – resync only when the client asks for it."
 msgstr ""
 "OneDrive läuft gerade – neu abgleichen nur, wenn der Client es verlangt."
 
-#: extension.js:1057
+#: extension.js:940
 msgid "systemd-run failed."
 msgstr "systemd-run ist fehlgeschlagen."
 
-#: extension.js:1071
+#: extension.js:954
 msgid "Resync finished, OneDrive is running again."
 msgstr "Neuabgleich abgeschlossen, OneDrive läuft wieder."
 
-#: extension.js:1072
+#: extension.js:955
 msgid "Resync failed – see “Full Log in Terminal”."
 msgstr ""
 "Neuabgleich fehlgeschlagen – siehe „Vollständiges Protokoll im Terminal“."
 
-#: prefs.js:16
+#: extension.js:1082
+msgid "Open OneDrive Folder"
+msgstr "OneDrive-Ordner öffnen"
+
+#: extension.js:1083
+msgid "Edit Configuration"
+msgstr "Konfiguration bearbeiten"
+
+#: extension.js:1087
+msgid "Resync"
+msgstr "Neu abgleichen"
+
+#: extension.js:1089
+msgid "Restart"
+msgstr "Neu starten"
+
+#: extension.js:1104 extension.js:1296
+#, javascript-format
+msgid "OneDrive: %s"
+msgstr "OneDrive: %s"
+
+#: extension.js:1114
+#, javascript-format
+msgid "Last sync: %s"
+msgstr "Letzte Synchronisation: %s"
+
+#: extension.js:1122
+msgid "Pause"
+msgstr "Anhalten"
+
+#: extension.js:1122
+msgid "Start"
+msgstr "Starten"
+
+#: extension.js:1128
+msgid "Cancel Sign-in"
+msgstr "Anmeldung abbrechen"
+
+#: extension.js:1129
+msgid "Sign In Again"
+msgstr "Neu anmelden"
+
+#: extension.js:1129
+msgid "Sign In"
+msgstr "Anmelden"
+
+#: extension.js:1275 prefs.js:24
+msgid "Recent Messages"
+msgstr "Letzte Meldungen"
+
+#: extension.js:1278
+msgid "Full Log in Terminal"
+msgstr "Vollständiges Protokoll im Terminal"
+
+#: extension.js:1310
+msgid "(none)"
+msgstr "(keine)"
+
+#: extension.js:1334
+#, javascript-format
+msgid "No terminal found. Command: %s"
+msgstr "Kein Terminal gefunden. Befehl: %s"
+
+#: prefs.js:17
 msgid "Menu"
 msgstr "Menü"
 
-#: prefs.js:24
+#: prefs.js:25
 #, javascript-format
 msgid "Number of entries shown (at most %s)"
 msgstr "Anzahl der angezeigten Einträge (höchstens %s)"
 
-#: prefs.js:31
+#: prefs.js:32
 msgid "File Operations Only"
 msgstr "Nur Dateiaktionen"
 
-#: prefs.js:32
+#: prefs.js:33
 msgid "Uploads, downloads, deletions and moves; otherwise all client messages"
 msgstr ""
 "Hoch- und Herunterladen, Löschen, Verschieben; sonst alle Meldungen des "
 "Clients"
 
-#: auth-window.js:80
+#: prefs.js:46
+msgid "Accounts"
+msgstr "Konten"
+
+#: prefs.js:47
+msgid ""
+"Names shown in the menu. Leave empty to show the address used to sign in."
+msgstr ""
+"Namen im Menü. Leer lassen, um die bei der Anmeldung verwendete Adresse "
+"anzuzeigen."
+
+#: auth-window.js:102
 #, javascript-format
 msgid "Microsoft reports: %s – %s"
 msgstr "Microsoft meldet: %s – %s"

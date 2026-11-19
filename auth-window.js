@@ -8,7 +8,9 @@
 //
 // Loads the Microsoft sign-in and intercepts the redirect to …/oauth2/nativeclient?code=…
 // before Microsoft redirects away from it. The full response address is written atomically
-// to RESPONSE_FILE; nothing else leaves this window.
+// to RESPONSE_FILE. On success, the address typed into the sign-in form is printed as
+// "login-name: …", so the extension can suggest it as the account's name; nothing else
+// leaves this window.
 //
 // Exit status: 0 = response written, 10 = window closed,
 //              11 = Microsoft reported an error, 12 = wrong usage.
@@ -40,6 +42,17 @@ if (!authUrl?.startsWith('https://login.microsoftonline.com/') || !responseFile)
 
 const REDIRECT = /^https:\/\/login\.microsoftonline\.com\/[^/]+\/oauth2\/nativeclient\?/;
 let exitCode = EXIT_CLOSED;
+let loginName = null;
+
+// Reports the content of Microsoft's sign-in field (name="loginfmt") while it is typed.
+const LOGIN_FIELD_SCRIPT = `
+for (const type of ['input', 'change']) {
+    document.addEventListener(type, event => {
+        const field = event.target;
+        if (field instanceof HTMLInputElement && field.name === 'loginfmt')
+            window.webkit.messageHandlers.loginName.postMessage(field.value);
+    }, true);
+}`;
 
 const app = new Adw.Application({application_id: 'dev.steber.CloudSyncIndicator.Login'});
 
@@ -53,6 +66,18 @@ app.connect('activate', () => {
         vexpand: true,
         hexpand: true,
     });
+
+    const content = view.get_user_content_manager();
+    content.register_script_message_handler('loginName', null);
+    content.connect('script-message-received::loginName', (_manager, value) => {
+        // Keep the last valid address: the following pages contain the field again, and
+        // may report it empty.
+        const text = value.to_string().trim();
+        if (/^[^\s@]+@[^\s@]+$/.test(text) && text.length <= 254)
+            loginName = text;
+    });
+    content.add_script(new WebKit.UserScript(LOGIN_FIELD_SCRIPT,
+        WebKit.UserContentInjectedFrames.TOP_FRAME, WebKit.UserScriptInjectionTime.END, null, null));
 
     const box = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
     box.append(header);
@@ -76,6 +101,8 @@ app.connect('activate', () => {
         if (params.code) {
             GLib.file_set_contents(responseFile, `${uri}\n`);
             exitCode = EXIT_OK;
+            if (loginName)
+                print(`login-name: ${loginName}`);
         } else {
             printerr(_('Microsoft reports: %s – %s')
                 .replace('%s', params.error ?? '?')
