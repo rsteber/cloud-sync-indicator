@@ -4,13 +4,13 @@
     <key name="log-entries" type="i">
       <range min="1" max="30"/>
       <default>12</default>
-      <summary>Number of entries under “Recent Messages”</summary>
+      <summary>Number of recent entries in the menu</summary>
       <description>How many of the latest client messages the menu shows. At most 30 so that the menu fits on the screen.</description>
     </key>
     <key name="file-operations-only" type="b">
       <default>true</default>
-      <summary>Show only file operations under “Recent Messages”</summary>
-      <description>If set, only uploads, downloads, deletions, moves and created folders are listed. Otherwise all client messages except recurring routine lines are listed.</description>
+      <summary>Show only file operations in the menu</summary>
+      <description>If set, only uploads, downloads, deletions, moves and created folders are listed, under “Recent File Changes”. Otherwise all client messages except recurring routine lines are listed, under “Recent Messages”.</description>
     </key>
     <key name="account-names" type="a{ss}">
       <default>{}</default>

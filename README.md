@@ -12,8 +12,8 @@ running as a systemd user service (`onedrive.service`).
   resync required, error (including repeated restarts). On errors the icon changes color
   and a notification appears.
 - **Menu:** open the OneDrive folder, edit the configuration, pause/start, restart,
-  recent messages (number configurable, 1–30; by default only file operations such as
-  uploads, downloads, deletions and moves), full log in a terminal.
+  recent file changes (uploads, downloads, deletions and moves; number configurable, 1–30;
+  can be switched to all client messages), the full log of the last 24 hours in a terminal.
 - **Sign-in:** a dedicated sign-in window (WebKitGTK) that passes the response address of the
   Microsoft sign-in to the client by itself. Fallback: sign in using the browser and take the
   response address from the clipboard.
@@ -104,7 +104,7 @@ notifications to the extension; setting `disable_notifications` in the configura
 instead makes client 2.5.4 require a resync.
 
 With more than one account, each account has its own submenu, the top bar shows the account
-that most needs attention, and recent messages are listed together, each with the account's
+that most needs attention, and recent entries are listed together, each with the account's
 name. The name is the address used to sign in, or one you set in the preferences. The
 client's own `onedrive.service` is left out when it is unused and other accounts exist.
 

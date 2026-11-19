@@ -40,7 +40,7 @@ const RUNNING = ['active', 'activating', 'reloading'];
 // Client log messages (2.5.4 to 2.5.12; some texts changed in between).
 const RE_SYNC_START = /Starting a sync with Microsoft OneDrive/;
 const RE_SYNC_DONE = /Sync with Microsoft OneDrive is complete/;
-// File operations, shown under "Recent Messages" when "file-operations-only" is set.
+// File operations, shown under "Recent File Changes" when "file-operations-only" is set.
 // Progress lines ("Uploading: … 42%") and notices ("Trying to delete …") are left out.
 const RE_FILE_OP = new RegExp([
     '^Uploading (new|modified) file: ',
@@ -997,15 +997,15 @@ class Account {
         this._changed();
     }
 
-    // The client reads its configuration only at startup; version 2.5.4 requires a resync
-    // after almost any change (exit status 126, or 78 from 2.5.12).
+    // The client reads its configuration only at startup; after most changes it requires a
+    // resync (exit status 126, or 78 from 2.5.12).
     _configChanged() {
         const source = MessageTray.getSystemSource();
         const notification = new MessageTray.Notification({
             source,
             title: _('OneDrive configuration changed'),
             body: _('The change takes effect after the client restarts. ' +
-                    'Version 2.5.4 then usually requires a resync.'),
+                    'The client then usually requires a resync.'),
         });
         notification.addAction(_('Restart Now'), () => this.restartService());
         source.addNotification(notification);
@@ -1035,7 +1035,7 @@ class Account {
             return [this.syncing ? 'syncing' : 'ok', null];
         case 'activating':
             if (p.sub === 'auto-restart' || p.restarts >= 2)
-                return ['error', fmt(_('Restarting repeatedly (%s×) – see recent messages'), p.restarts)];
+                return ['error', fmt(_('Restarting repeatedly (%s×) – see “Full Log in Terminal”'), p.restarts)];
             return ['starting', null];
         case 'deactivating':
             return ['stopping', null];
@@ -1343,7 +1343,7 @@ function compactMessage(msg) {
     return {icon: null, symbol: null, text: msg};
 }
 
-// One entry of "Recent Messages": symbol, path (shortened in the middle), time and account.
+// One entry of "Recent File Changes"/"Recent Messages": symbol, path (shortened in the middle), time and account.
 function logItem({time, msg, account}, showAccount) {
     const {icon, text} = compactMessage(msg);
     const item = new PopupMenu.PopupBaseMenuItem({reactive: false, style_class: 'cloud-sync-log-item'});
@@ -1710,10 +1710,10 @@ class SyncIndicator extends PanelMenu.Button {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addAction(_('Add Account'), () => this._addAccountAction(), 'list-add-symbolic');
-        this._logMenu = new PopupMenu.PopupSubMenuMenuItem(_('Recent Messages'), true);
+        this._logMenu = new PopupMenu.PopupSubMenuMenuItem('', true);
         this._logMenu.icon.icon_name = 'document-open-recent-symbolic';
         this.menu.addMenuItem(this._logMenu);
-        this._logMenu.menu.addAction(_('Full Log in Terminal'),
+        this._logMenu.menu.addAction(_('Full Log in Terminal (24 h)'),
             () => this._openJournalInTerminal(), 'utilities-terminal-symbolic');
         this._logSection = new PopupMenu.PopupMenuSection();
         this._logMenu.menu.addMenuItem(this._logSection);
@@ -1722,6 +1722,7 @@ class SyncIndicator extends PanelMenu.Button {
             if (open)
                 this._fillLog();
         });
+        this._fillLog();
     }
 
     _rebuildViews() {
@@ -1742,6 +1743,8 @@ class SyncIndicator extends PanelMenu.Button {
     _fillLog() {
         this._logSection.removeAll();
         const fileOps = this._settings.get_boolean('file-operations-only');
+        // The title says what the filter lets through.
+        this._logMenu.label.text = fileOps ? _('Recent File Changes') : _('Recent Messages');
         const log = this._accounts.flatMap(a => fileOps ? a.fileLog : a.log)
             .sort((a, b) => a.time.compare(b.time));
         if (log.length === 0) {
@@ -1759,7 +1762,8 @@ class SyncIndicator extends PanelMenu.Button {
     }
 
     _openJournalInTerminal() {
-        const command = ['journalctl', '--user', ...this._journalUnitArgs(), '-n', '200', '-f'];
+        // With --since, -f shows everything since then (otherwise only the last 10 lines).
+        const command = ['journalctl', '--user', ...this._journalUnitArgs(), '--since', '-24h', '-f'];
         const terminal = TERMINALS.find(([name]) => GLib.find_program_in_path(name));
         if (!terminal) {
             Main.notify('OneDrive', fmt(_('No terminal found. Command: %s'), command.join(' ')));

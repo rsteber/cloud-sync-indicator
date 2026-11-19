@@ -21,7 +21,7 @@ export default class CloudSyncIndicatorPreferences extends ExtensionPreferences 
         const [min, max] = settings.settings_schema.get_key('log-entries')
             .get_range().deepUnpack()[1].deepUnpack();
         const row = new Adw.SpinRow({
-            title: _('Recent Messages'),
+            title: _('Recent Entries'),
             subtitle: _('Number of entries shown (at most %s)').replace('%s', max),
             adjustment: new Gtk.Adjustment({lower: min, upper: max, step_increment: 1, page_increment: 5}),
         });
