@@ -651,7 +651,14 @@ class SyncIndicator extends PanelMenu.Button {
     async _initDBus() {
         // Without Subscribe, systemd sends no PropertiesChanged signals. There is no Unsubscribe
         // in disable(), because the subscription belongs to the shell's shared D-Bus connection.
-        await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null);
+        // For the same reason it is still active when the extension is enabled again (e.g. after
+        // the screen was locked), and systemd then answers "AlreadySubscribed".
+        try {
+            await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null);
+        } catch (e) {
+            if (!Gio.DBusError.get_remote_error(e)?.endsWith('.AlreadySubscribed'))
+                throw e;
+        }
         const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
             new GLib.Variant('(s)', [UNIT]), '(o)')).deepUnpack();
         if (this._cancellable.is_cancelled())
@@ -684,6 +691,11 @@ class SyncIndicator extends PanelMenu.Button {
         logError(e, 'cloud-sync-indicator: systemd not reachable');
         this._props = {};
         this._update();
+        // Setup did not finish: try again later instead of staying in "unknown".
+        if (!this._unitPath) {
+            this._schedule('dbus-retry', 30000, () =>
+                this._initDBus().catch(err => this._dbusFailed(err)));
+        }
     }
 
     async _refresh() {

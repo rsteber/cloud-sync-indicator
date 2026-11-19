@@ -93,6 +93,21 @@ gnome-extensions pack --force --podir=po \
   --schema=schemas/org.gnome.shell.extensions.cloud-sync-indicator.gschema.xml
 ```
 
+## Versions and releases
+
+extensions.gnome.org numbers every upload itself (1, 2, 3, …). The repository follows that
+numbering: `version-name` in `metadata.json` and the git tag `vN` carry the same number as
+the upload. For a release:
+
+1. Set `"version-name"` in `metadata.json` to the next number and commit.
+2. Build the package (see above) and upload it.
+3. Tag the commit and push the tag:
+
+   ```bash
+   git tag -a vN -m "extensions.gnome.org version N"
+   git push origin vN
+   ```
+
 ## License
 
 GPL-2.0-or-later, see [LICENSE](LICENSE).
