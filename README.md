@@ -19,8 +19,8 @@ running as a systemd user service (`onedrive.service`).
   response address from the clipboard.
 - **Resync:** when the client requires one (exit status 126), it can be started from the menu.
   It runs as a separate systemd unit and starts the service again afterwards.
-- **Several accounts:** every client instance set up as its own systemd user unit is found
-  automatically (see [Several accounts](#several-accounts)).
+- **Several accounts:** add and remove accounts from the menu; client instances set up by
+  hand as systemd user units are found automatically (see [Several accounts](#several-accounts)).
 - **Notice after configuration changes:** the client reads its configuration only at startup;
   after saving, a notification offers to restart it.
 - **Languages:** English and German.
@@ -50,12 +50,24 @@ running as a systemd user service (`onedrive.service`).
 ## Several accounts
 
 The client handles one account per instance: each needs its own configuration directory
-(`--confdir`), its own `sync_dir`, and its own systemd user unit. The extension finds every
-user unit named `onedrive*.service` whose `ExecStart` runs `onedrive --monitor`, and takes
-the configuration directory from `--confdir`. Units added later are found after
-`systemctl --user daemon-reload`.
+(`--confdir`), its own `sync_dir`, and its own systemd user process.
 
-Example for a second account, following the client's documentation:
+**From the menu:** “Add Account” asks for a name and a folder and opens the sign-in window.
+The extension then runs the client as a transient systemd unit
+(`systemd-run --user --unit=onedrive-<name>.service … onedrive --monitor --disable-notifications
+--confdir ~/.config/onedrive-<name> --syncdir <folder>`) and writes no files itself; the client
+creates its configuration directory. A transient unit ends with the session, so the extension
+starts it again at the next login. Such an account is therefore synchronized while you are
+logged in and the extension is enabled. Paused accounts stay paused. “Remove Account” stops
+the account and, if chosen, deletes its configuration directory (sign-in and sync database);
+the synchronized files are always kept.
+
+**By hand:** the extension also finds every user unit named `onedrive*.service` whose
+`ExecStart` runs `onedrive --monitor`, and takes the configuration directory from
+`--confdir`. Units added later are found after `systemctl --user daemon-reload`. Such accounts
+run independently of the extension; it does not remove them.
+
+Example, following the client's documentation:
 
 ```bash
 mkdir -p ~/.config/onedrive-work
@@ -118,6 +130,13 @@ cp extras/dev.steber.CloudSyncIndicator.Login.svg ~/.local/share/icons/hicolor/s
   (the service then exits with status 126).
 - `onedrive --reauth` discards the existing sign-in right away, not only on success.
   Cancelling the sign-in leaves you signed out.
+- **Personal accounts cannot sign in with clients before 2.5.10.** Microsoft returns long
+  authorization codes for personal accounts that contain characters such as `*`, `!` or `$`.
+  Older clients cut the code off at these characters, and Microsoft rejects the rest with
+  AADSTS70000 ([abraunegg/onedrive#3625](https://github.com/abraunegg/onedrive/pull/3625)).
+  With such a client the sign-in window reports this instead of passing on the code. Debian 13
+  ships 2.5.4; newer versions are available from the client's
+  [own package repository](https://github.com/abraunegg/onedrive/blob/master/docs/install.md).
 
 ## Translations
 

@@ -22,6 +22,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
+import * as CheckBox from 'resource:///org/gnome/shell/ui/checkBox.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -91,6 +92,8 @@ function promisifyAsyncMethods() {
     Gio._promisify(Gio.File.prototype, 'replace_contents_bytes_async', 'replace_contents_finish');
     Gio._promisify(Gio.File.prototype, 'delete_async');
     Gio._promisify(Gio.File.prototype, 'make_directory_async');
+    Gio._promisify(Gio.File.prototype, 'enumerate_children_async');
+    Gio._promisify(Gio.FileEnumerator.prototype, 'next_files_async');
 }
 
 function dbusCall(path, iface, method, params, replyType = null) {
@@ -142,6 +145,66 @@ function writeText(path, text) {
         Gio.FileCreateFlags.PRIVATE, null);
 }
 
+// Deletes a directory with everything in it; symbolic links are deleted, not followed.
+async function deleteTree(dir) {
+    let enumerator;
+    try {
+        enumerator = await dir.enumerate_children_async('standard::name,standard::type',
+            Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, GLib.PRIORITY_DEFAULT, null);
+    } catch (e) {
+        if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
+            return;
+        throw e;
+    }
+    for (;;) {
+        const infos = await enumerator.next_files_async(50, GLib.PRIORITY_DEFAULT, null);
+        if (infos.length === 0)
+            break;
+        for (const info of infos) {
+            const child = dir.get_child(info.get_name());
+            if (info.get_file_type() === Gio.FileType.DIRECTORY)
+                await deleteTree(child);
+            else
+                await child.delete_async(GLib.PRIORITY_DEFAULT, null);
+        }
+    }
+    await dir.delete_async(GLib.PRIORITY_DEFAULT, null);
+}
+
+function expandHome(path) {
+    return path === '~' || path.startsWith('~/') ? GLib.get_home_dir() + path.slice(1) : path;
+}
+
+// True if one path is the other or lies inside it.
+function overlaps(a, b) {
+    return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+// Version of the onedrive client as [major, minor, patch], or null if unknown. Not cached:
+// the client may be updated while the shell is running.
+async function getClientVersion() {
+    try {
+        const proc = Gio.Subprocess.new(['onedrive', '--version'],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
+        const [out] = await proc.communicate_utf8_async(null, null);
+        const m = out?.match(/v(\d+)\.(\d+)\.(\d+)/);
+        return m ? m.slice(1, 4).map(Number) : null;
+    } catch {
+        return null; // not installed
+    }
+}
+
+async function clientOlderThan(version) {
+    const current = await getClientVersion();
+    if (!current)
+        return false;
+    for (let i = 0; i < 3; i++) {
+        if (current[i] !== version[i])
+            return current[i] < version[i];
+    }
+    return false;
+}
+
 function formatTime(dt) {
     if (!dt)
         return '';
@@ -187,9 +250,15 @@ function launchUri(uri) {
 
 const ConfirmDialog = GObject.registerClass(
 class ConfirmDialog extends ModalDialog.ModalDialog {
-    _init({title, description, okLabel = _('Continue')}, onContinue) {
+    _init({title, description, okLabel = _('Continue'), checkLabel = null, checked = false}, onContinue) {
         super._init({styleClass: 'cloud-sync-dialog'});
         this.contentLayout.add_child(new Dialog.MessageDialogContent({title, description}));
+        let check = null;
+        if (checkLabel) {
+            check = new CheckBox.CheckBox(checkLabel);
+            check.checked = checked;
+            this.contentLayout.add_child(check);
+        }
         this.setButtons([
             {label: _('Cancel'), action: () => this.close(), key: Clutter.KEY_Escape},
             {
@@ -197,10 +266,80 @@ class ConfirmDialog extends ModalDialog.ModalDialog {
                 default: true,
                 action: () => {
                     this.close();
-                    onContinue();
+                    onContinue(check?.checked ?? false);
                 },
             },
         ]);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Dialog for a new account: name and folder. onAdd(name, folder) throws to report a problem;
+// the dialog then stays open.
+
+const AddAccountDialog = GObject.registerClass(
+class AddAccountDialog extends ModalDialog.ModalDialog {
+    _init(onAdd) {
+        super._init({styleClass: 'cloud-sync-dialog'});
+        this._onAdd = onAdd;
+        this.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: _('Add OneDrive Account'),
+            description: _('The account gets a folder of its own. It is synchronized while you ' +
+                'are logged in and the extension is enabled. After “Add”, the sign-in window opens.'),
+        }));
+
+        this._nameEntry = this._addField(_('Name'), _('e.g. Private'));
+        this._dirEntry = this._addField(_('Folder'), '~/OneDrive-…');
+        this._error = new St.Label({style_class: 'cloud-sync-dialog-error', text: ''});
+        this._error.clutter_text.line_wrap = true;
+        this.contentLayout.add_child(this._error);
+
+        // The folder follows the name until it is edited.
+        let settingDir = false;
+        let dirEdited = false;
+        this._dirEntry.clutter_text.connect('text-changed', () => {
+            if (!settingDir)
+                dirEdited = true;
+        });
+        this._nameEntry.clutter_text.connect('text-changed', () => {
+            if (dirEdited)
+                return;
+            // No slashes or spaces in the folder name.
+            const name = this._nameEntry.text.trim().split('/').join(' ').replace(/\s+/g, '-');
+            settingDir = true;
+            this._dirEntry.text = name ? `~/OneDrive-${name}` : '';
+            settingDir = false;
+        });
+        this._nameEntry.clutter_text.connect('activate', () => this._dirEntry.grab_key_focus());
+        this._dirEntry.clutter_text.connect('activate', () => this._add());
+
+        this.setButtons([
+            {label: _('Cancel'), action: () => this.close(), key: Clutter.KEY_Escape},
+            {label: _('Add'), default: true, action: () => this._add()},
+        ]);
+        this.setInitialKeyFocus(this._nameEntry);
+    }
+
+    _addField(label, hint) {
+        this.contentLayout.add_child(new St.Label({text: label, style_class: 'cloud-sync-dialog-label'}));
+        const entry = new St.Entry({hint_text: hint, can_focus: true, x_expand: true});
+        this.contentLayout.add_child(entry);
+        return entry;
+    }
+
+    async _add() {
+        if (this._busy)
+            return;
+        this._busy = true;
+        this._error.text = '';
+        try {
+            await this._onAdd(this._nameEntry.text.trim(), this._dirEntry.text.trim());
+            this.close();
+        } catch (e) {
+            this._error.text = e.message;
+        } finally {
+            this._busy = false;
+        }
     }
 });
 
@@ -298,7 +437,10 @@ class AuthFlow {
         let win;
         try {
             // stdout: only the "login-name:" line; stderr: error messages.
-            win = Gio.Subprocess.new(['gjs', '-m', script, this._authUrl, this._respFile],
+            const argv = ['gjs', '-m', script, this._authUrl, this._respFile];
+            if (await clientOlderThan([2, 5, 10]))
+                argv.push('--strict-code');
+            win = Gio.Subprocess.new(argv,
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
         } catch (e) {
             this._useBrowser(fmt(_('The sign-in window could not be started (%s).'), e.message));
@@ -405,6 +547,8 @@ class AuthFlow {
     }
 
     async _fail(message) {
+        // Also in the journal: the notification disappears once it has been clicked.
+        console.warn(`cloud-sync-indicator: sign-in failed (${this._account.unit}): ${message}`);
         this._clearNotification();
         Main.notify(_('OneDrive: sign-in failed'), message);
         await this._end(false);
@@ -516,6 +660,14 @@ class Timers {
     }
 }
 
+// True if a unit of this name exists (unit file, or a loaded – e.g. transient – unit).
+async function unitExists(unit) {
+    const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
+        new GLib.Variant('(s)', [unit]), '(o)')).deepUnpack();
+    const {LoadState} = await getProps(path, 'org.freedesktop.systemd1.Unit', ['LoadState']);
+    return LoadState !== 'not-found';
+}
+
 // Object path of a unit, derived from its name. Unlike LoadUnit, this does not create a
 // placeholder unit (which would trigger UnitNew/UnitRemoved).
 function unitObjectPath(unit) {
@@ -528,7 +680,7 @@ function unitObjectPath(unit) {
 // directory. Keeps the state of that instance; the indicator only displays it.
 
 class Account {
-    constructor(indicator, {unit, confDir, clientArgs}) {
+    constructor(indicator, {unit, confDir, clientArgs, managed = false, syncDir = null}) {
         this._indicator = indicator;
         this.unit = unit;
         this.id = unit.replace(/\.service$/, '');
@@ -538,6 +690,9 @@ class Account {
         this.configFile = GLib.build_filenamev([confDir, 'config']);
         // Arguments that select this account's configuration, e.g. ['--confdir', …].
         this.clientArgs = clientArgs;
+        // Created by the extension: runs as a transient unit, which the extension starts.
+        this.managed = managed;
+        this._syncDir = syncDir;
         this.extensionPath = indicator.extensionPath;
 
         this.props = {};
@@ -575,6 +730,8 @@ class Account {
     }
 
     async syncDir() {
+        if (this._syncDir)
+            return this._syncDir;
         const conf = await readText(this.configFile) ?? '';
         const m = conf.match(/^\s*sync_dir\s*=\s*"([^"]*)"/m);
         const dir = m ? m[1] : '~/OneDrive';
@@ -625,6 +782,17 @@ class Account {
                 this.resyncUnit, Gio.DBusSignalFlags.NONE, refresh),
         ];
         await this._refresh();
+        await this._autostart();
+    }
+
+    // A transient unit ends with the session: start it again when the extension is enabled –
+    // unless the account is paused or not signed in yet. After the screen was unlocked the
+    // unit still exists, so nothing happens.
+    async _autostart() {
+        if (!this.managed || this.props.load !== 'not-found' || this._indicator.isPaused(this))
+            return;
+        if (await exists(this.tokenFile) && !this._cancellable.is_cancelled())
+            await this.startService();
     }
 
     _dbusFailed(e) {
@@ -691,15 +859,49 @@ class Account {
 
     async startService() {
         try {
-            await unitJob('StartUnit', this.unit);
+            if (!this.managed) {
+                await unitJob('StartUnit', this.unit);
+                return;
+            }
+            this._indicator.setPaused(this, false);
+            await this._refresh();
+            // After it was stopped, a transient unit no longer exists; a failed one still does.
+            if (this.props.load === 'loaded')
+                await unitJob('StartUnit', this.unit);
+            else
+                await this._runTransient();
         } catch (e) {
             this._notifyError(e);
         }
     }
 
+    async _runTransient() {
+        const onedrive = GLib.find_program_in_path('onedrive');
+        if (!onedrive)
+            throw new Error(_('The “onedrive” client is not installed.'));
+        // The same settings as the client's own onedrive.service.
+        const proc = Gio.Subprocess.new([
+            'systemd-run', '--user', `--unit=${this.unit}`,
+            `--description=OneDrive Client for Linux (${this.name})`,
+            '-p', 'After=network-online.target', '-p', 'Wants=network-online.target',
+            '-p', 'Restart=on-failure', '-p', 'RestartSec=3', '-p', 'RestartPreventExitStatus=126',
+            '-p', 'TimeoutStopSec=90', '-p', 'ProtectSystem=full',
+            onedrive, '--monitor', '--disable-notifications', ...this.clientArgs,
+        ], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
+        const [out] = await proc.communicate_utf8_async(null, this._cancellable);
+        if (!proc.get_successful())
+            throw new Error(lastLines(out) || _('systemd-run failed.'));
+    }
+
     toggleService() {
-        unitJob(this.running ? 'StopUnit' : 'StartUnit', this.unit)
-            .catch(e => this._notifyError(e));
+        if (!this.running) {
+            this.startService();
+            return;
+        }
+        // Remembered, so that a paused account is not started again at the next login.
+        if (this.managed)
+            this._indicator.setPaused(this, true);
+        unitJob('StopUnit', this.unit).catch(e => this._notifyError(e));
     }
 
     restartService() {
@@ -804,7 +1006,8 @@ class Account {
         const p = this.props;
         if (!p.active)
             return ['unknown', _('systemd service not reachable')];
-        if (p.load === 'not-found')
+        // An account created by the extension has no unit while it is stopped.
+        if (p.load === 'not-found' && !this.managed)
             return ['error', fmt(_('%s is not installed'), this.unit)];
         if (this.auth)
             return ['auth', this.authHint ?? _('Signing in …')];
@@ -872,14 +1075,47 @@ class Account {
                 _('After “Continue”, a separate sign-in window with the Microsoft sign-in ' +
                   'opens. It closes by itself once you have signed in.'),
             ].filter(Boolean).join('\n\n'),
-        }, () => {
-            if (this.auth || this._cancellable.is_cancelled())
-                return;
-            this.auth = new AuthFlow(this);
-            this.authHint = null;
-            this._changed();
-            this.auth.run().catch(logError);
-        }).open();
+        }, () => this.beginAuth()).open();
+    }
+
+    beginAuth() {
+        if (this.auth || this._cancellable.is_cancelled())
+            return;
+        this.auth = new AuthFlow(this);
+        this.authHint = null;
+        this._changed();
+        this.auth.run().catch(logError);
+    }
+
+    // --- Removal (accounts created by the extension only) ------------------
+
+    removeAction() {
+        this._indicator.menu.close();
+        if (!this.managed || this.auth)
+            return;
+        new ConfirmDialog({
+            title: fmt(_('Remove the Account “%s”'), this.name),
+            description: _('The account is stopped and removed from the menu. ' +
+                'Its folder and the files in it are kept.'),
+            okLabel: _('Remove'),
+            checkLabel: _('Also delete the sign-in and the local sync database'),
+            checked: true,
+        }, deleteConfig => this._remove(deleteConfig).catch(e => this._notifyError(e))).open();
+    }
+
+    async _remove(deleteConfig) {
+        await this._refresh();
+        if (this.props.load === 'loaded') {
+            if (!['inactive', 'failed'].includes(this.props.active))
+                await this.stopServiceAndWait(this._cancellable);
+            // A failed transient unit stays until it is reset.
+            await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ResetFailedUnit',
+                new GLib.Variant('(s)', [this.unit]), null).catch(() => {});
+        }
+        if (deleteConfig)
+            await deleteTree(Gio.File.new_for_path(this.confDir));
+        // Removes this account from the settings; discovery then destroys this object.
+        this._indicator.forgetAccount(this);
     }
 
     setAuthHint(text) {
@@ -898,6 +1134,9 @@ class Account {
     // loginName: the address typed into the sign-in window, if known.
     authSucceeded(loginName) {
         this.authError = false;
+        // For a new account the config directory did not exist yet, so its monitor may
+        // report the token late.
+        this._checkToken();
         if (loginName)
             this._indicator.setLoginName(this, loginName);
     }
@@ -1007,7 +1246,9 @@ function parseExecStart(execStart) {
     return null;
 }
 
-async function findAccounts() {
+// managed: the accounts created by the extension (setting "managed-accounts"); they are listed
+// whether their transient unit exists right now or not.
+async function findAccounts(managed) {
     const [files] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ListUnitFilesByPatterns',
         new GLib.Variant('(asas)', [[], [UNIT_PATTERN]]), '(a(ss))')).deepUnpack();
     // Loaded units as well: instances of a template unit have no unit file of their own.
@@ -1017,9 +1258,13 @@ async function findAccounts() {
     const activeStates = new Map(loaded.map(u => [u[0], u[3]]));
     const units = [...new Set([...fileStates.keys(), ...activeStates.keys()])]
         .filter(unit => !unit.includes('@.')) // a template itself is not an account
+        .filter(unit => !(unit in managed))
         .sort();
 
-    const found = [];
+    const found = Object.entries(managed).map(([unit, {'conf-dir': confDir, 'sync-dir': syncDir}]) => ({
+        unit, confDir, syncDir, managed: true, used: true,
+        clientArgs: ['--confdir', confDir, '--syncdir', syncDir],
+    }));
     for (const unit of units) {
         const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
             new GLib.Variant('(s)', [unit]), '(o)')).deepUnpack();
@@ -1053,6 +1298,64 @@ async function findAccounts() {
 // Menu items of one account. With a single account they are placed directly in the menu,
 // as before; with several, each account gets a submenu with its actions, and its details
 // below it.
+
+// A client message in short form: a symbol instead of the verb, and only the path.
+// Returns {icon, symbol, text}; icon and symbol are null for other messages.
+const FILE_OPS = [
+    [/^Uploading (?:new|modified) file: (.+)$/, 'go-up-symbolic', '↑'],
+    [/^Downloading file: (.+)$/, 'go-down-symbolic', '↓'],
+    [/^Deleting (?:local (?:file|directory)|item from Microsoft OneDrive): (.+)$/, 'user-trash-symbolic', '✕'],
+    [/^Successfully created the remote directory (.+?)(?: on Microsoft OneDrive)?$/, 'folder-new-symbolic', '+'],
+];
+
+function shortMove(from, to) {
+    const dir = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+    const base = p => p.slice(p.lastIndexOf('/') + 1);
+    if (dir(from) === dir(to))   // renamed
+        return `${from} → ${base(to)}`;
+    if (base(from) === base(to)) // moved to another folder
+        return `${from} → ${dir(to) || '.'}/`;
+    return `${from} → ${to}`;
+}
+
+function compactMessage(msg) {
+    // "… done" ends a completed transfer; anything else (e.g. "failed") stays visible.
+    const text = msg.replace(/\s*\.\.\.\s*done\.?$/, '');
+    for (const [re, icon, symbol] of FILE_OPS) {
+        const m = text.match(re);
+        if (m)
+            return {icon, symbol, text: m[1]};
+    }
+    const move = text.match(/^Moving (.+) to (.+)$/);
+    if (move)
+        return {icon: 'go-next-symbolic', symbol: '→', text: shortMove(move[1], move[2])};
+    return {icon: null, symbol: null, text: msg};
+}
+
+// One entry of "Recent Messages": symbol, path (shortened in the middle), time and account.
+function logItem({time, msg, account}, showAccount) {
+    const {icon, text} = compactMessage(msg);
+    const item = new PopupMenu.PopupBaseMenuItem({reactive: false, style_class: 'cloud-sync-log-item'});
+    // Other messages get an invisible icon, so that all texts start in the same column.
+    item.add_child(new St.Icon({
+        icon_name: icon ?? 'go-next-symbolic',
+        style_class: 'popup-menu-icon',
+        opacity: icon ? 255 : 0,
+    }));
+    const label = new St.Label({text, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+    label.clutter_text.ellipsize = Pango.EllipsizeMode.MIDDLE;
+    label.style = 'max-width: 28em;';
+    item.add_child(label);
+    item.label_actor = label;
+    const meta = new St.Label({
+        text: [formatTime(time), showAccount ? account.name : null].filter(Boolean).join(' · '),
+        style_class: 'cloud-sync-log-meta',
+        y_align: Clutter.ActorAlign.CENTER,
+    });
+    meta.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+    item.add_child(meta);
+    return item;
+}
 
 function detailItem() {
     const item = new PopupMenu.PopupMenuItem('', {reactive: false, style_class: 'cloud-sync-log-item'});
@@ -1093,6 +1396,26 @@ class AccountView {
         this._clipItem = actions.addAction(_('Sign in from clipboard'),
             () => account.auth?.fromClipboard(), 'edit-paste-symbolic');
         this._authItem = actions.addAction('', () => account.authAction(), 'dialog-password-symbolic');
+        this._removeItem = null;
+        if (account.managed) {
+            this._removeItem = actions.addAction(_('Remove Account'), () => account.removeAction(),
+                'user-trash-symbolic');
+        } else if (!single) {
+            // Menus have no tooltips: a disabled entry with the reason in a second, smaller line.
+            const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            item.add_child(new St.Icon({icon_name: 'user-trash-symbolic', style_class: 'popup-menu-icon'}));
+            const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
+            const label = new St.Label({text: _('Remove Account')});
+            box.add_child(label);
+            box.add_child(new St.Label({
+                text: _('Set up outside the extension – remove it with systemctl'),
+                style_class: 'cloud-sync-log-item',
+            }));
+            item.add_child(box);
+            item.label_actor = label;
+            item.setSensitive(false);
+            actions.addMenuItem(item);
+        }
     }
 
     // Returns the account's state as [key, hint].
@@ -1114,8 +1437,10 @@ class AccountView {
             details.push(hint);
         if (account.lastSync)
             details.push(fmt(_('Last sync: %s'), formatTime(account.lastSync)));
-        if (account.lastActivity)
-            details.push(`${formatTime(account.lastActivity.time)}  ${account.lastActivity.msg}`);
+        if (account.lastActivity) {
+            const {symbol, text} = compactMessage(account.lastActivity.msg);
+            details.push(`${formatTime(account.lastActivity.time)}  ${symbol ? `${symbol} ` : ''}${text}`);
+        }
         this._detail.label.text = details.join('\n') || ' ';
         // A detail line without content only takes up space below a submenu.
         this._detail.visible = this._single || details.length > 0;
@@ -1131,6 +1456,8 @@ class AccountView {
             : account.hasToken ? _('Sign In Again') : _('Sign In');
         this._authItem.setIcon(account.auth ? 'process-stop-symbolic' : 'dialog-password-symbolic');
         this._clipItem.visible = !!account.auth?.waitingForClipboard;
+        if (this._removeItem)
+            this._removeItem.visible = !account.auth;
         return [key, hint];
     }
 }
@@ -1161,8 +1488,12 @@ class SyncIndicator extends PanelMenu.Button {
         this._journal = null;
         this._journalCancellable = null;
         this._menuOpenId = 0;
-        this._settingsIds = ['account-names', 'login-names'].map(key =>
-            this._settings.connect(`changed::${key}`, () => this._update()));
+        this._pendingSignIn = null;
+        this._settingsIds = [
+            ...['account-names', 'login-names'].map(key =>
+                this._settings.connect(`changed::${key}`, () => this._update())),
+            this._settings.connect('changed::managed-accounts', () => this._rediscover()),
+        ];
 
         // Compact like AppIndicator icons in their “compact mode”.
         this.set_style('-natural-hpadding: 10px');
@@ -1205,6 +1536,89 @@ class SyncIndicator extends PanelMenu.Button {
         this._update();
     }
 
+    _managed() {
+        return this._dict('managed-accounts');
+    }
+
+    _setManaged(managed) {
+        this._settings.set_value('managed-accounts', new GLib.Variant('a{sa{ss}}', managed));
+    }
+
+    isPaused(account) {
+        return this._managed()[account.unit]?.paused === 'true';
+    }
+
+    setPaused(account, paused) {
+        const managed = this._managed();
+        const entry = managed[account.unit];
+        if (!entry || (entry.paused === 'true') === paused)
+            return;
+        entry.paused = String(paused);
+        this._setManaged(managed);
+    }
+
+    // Removes an account created by the extension from all settings.
+    forgetAccount(account) {
+        for (const key of ['account-names', 'login-names']) {
+            const names = this._dict(key);
+            if (account.unit in names) {
+                delete names[account.unit];
+                this._settings.set_value(key, new GLib.Variant('a{ss}', names));
+            }
+        }
+        const managed = this._managed();
+        delete managed[account.unit];
+        this._setManaged(managed);
+    }
+
+    _addAccountAction() {
+        this.menu.close();
+        new AddAccountDialog((name, folder) => this._addAccount(name, folder)).open();
+    }
+
+    // Checks the input and stores the new account; discovery then creates it and the
+    // sign-in starts (see _discover()). Throws with a message for the dialog.
+    async _addAccount(name, folder) {
+        if (!name)
+            throw new Error(_('Enter a name for the account.'));
+        if (!folder.startsWith('~') && !GLib.path_is_absolute(folder))
+            throw new Error(_('Enter the folder as a full path, e.g. ~/OneDrive-Private.'));
+        const dir = Gio.File.new_for_path(expandHome(folder)).get_path();
+        if (dir === '/' || dir === GLib.get_home_dir() ||
+            overlaps(dir, GLib.get_user_config_dir()))
+            throw new Error(_('Choose a folder of its own for the account.'));
+        for (const account of this._accounts) {
+            if (overlaps(dir, await account.syncDir()))
+                throw new Error(fmt(_('The folder overlaps with the folder of “%s”.'), account.name));
+        }
+
+        // Unit and config directory: onedrive-<name>, made unique.
+        const slug = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'account';
+        const managed = this._managed();
+        let unit, confDir;
+        for (let n = 1; ; n++) {
+            const id = n === 1 ? slug : `${slug}-${n}`;
+            unit = `onedrive-${id}.service`;
+            confDir = GLib.build_filenamev([GLib.get_user_config_dir(), `onedrive-${id}`]);
+            if (!(unit in managed) && !await exists(confDir) && !await unitExists(unit))
+                break;
+        }
+
+        const names = this._dict('account-names');
+        names[unit] = name;
+        this._settings.set_value('account-names', new GLib.Variant('a{ss}', names));
+        // Paused until signed in, so it is not started without a sign-in.
+        managed[unit] = {'conf-dir': confDir, 'sync-dir': dir, paused: 'true'};
+        this._pendingSignIn = unit;
+        this._setManaged(managed);
+    }
+
+    _rediscover() {
+        this._timers.schedule('discover', 300, () =>
+            this._discover().catch(e => logError(e, 'cloud-sync-indicator: finding accounts')));
+    }
+
     async _initDBus() {
         // Without Subscribe, systemd sends no signals. There is no Unsubscribe in disable(),
         // because the subscription belongs to the shell's shared D-Bus connection. For the same
@@ -1220,12 +1634,10 @@ class SyncIndicator extends PanelMenu.Button {
             return;
         if (this._dbusSignalIds.length === 0) {
             // Units enabled or disabled, or unit files added or removed (daemon-reload).
-            const rediscover = () => this._timers.schedule('discover', 1000, () =>
-                this._discover().catch(e => logError(e, 'cloud-sync-indicator: finding accounts')));
             const bus = Gio.DBus.session;
             this._dbusSignalIds = ['UnitFilesChanged', 'Reloading'].map(signal =>
                 bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, signal, MANAGER_PATH, null,
-                    Gio.DBusSignalFlags.NONE, rediscover));
+                    Gio.DBusSignalFlags.NONE, () => this._rediscover()));
         }
         await this._discover();
     }
@@ -1243,7 +1655,7 @@ class SyncIndicator extends PanelMenu.Button {
 
     // Keeps the Account objects of units that are still there, so their state is kept.
     async _discover() {
-        const specs = await findAccounts();
+        const specs = await findAccounts(this._managed());
         if (this._cancellable.is_cancelled())
             return;
         this._discovered = true;
@@ -1253,8 +1665,10 @@ class SyncIndicator extends PanelMenu.Button {
         const added = next.filter(a => !this._accounts.includes(a));
         const removed = this._accounts.filter(a => !next.includes(a));
         if (added.length === 0 && removed.length === 0 &&
-            next.every((a, i) => a === this._accounts[i]))
+            next.every((a, i) => a === this._accounts[i])) {
+            this._startPendingSignIn();
             return;
+        }
 
         removed.forEach(a => a.destroy());
         this._accounts = next;
@@ -1265,6 +1679,16 @@ class SyncIndicator extends PanelMenu.Button {
         added.forEach(a => a.start());
         this._startJournal();
         this._update();
+        this._startPendingSignIn();
+    }
+
+    // A newly added account: sign in right away (the add dialog has explained it).
+    _startPendingSignIn() {
+        const account = this._accounts.find(a => a.unit === this._pendingSignIn);
+        if (!account)
+            return;
+        this._pendingSignIn = null;
+        account.beginAuth();
     }
 
     // --- Menu --------------------------------------------------------------
@@ -1274,6 +1698,7 @@ class SyncIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._accountSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this.menu.addAction(_('Add Account'), () => this._addAccountAction(), 'list-add-symbolic');
         this._logMenu = new PopupMenu.PopupSubMenuMenuItem(_('Recent Messages'), true);
         this._logMenu.icon.icon_name = 'document-open-recent-symbolic';
         this.menu.addMenuItem(this._logMenu);
@@ -1314,15 +1739,8 @@ class SyncIndicator extends PanelMenu.Button {
         }
         const several = this._accounts.length > 1;
         const count = this._settings.get_int('log-entries');
-        for (const {time, msg, account} of log.slice(-count).reverse()) {
-            const text = several ? `${formatTime(time)}  ${account.name}: ${msg}`
-                : `${formatTime(time)}  ${msg}`;
-            const item = new PopupMenu.PopupMenuItem(text,
-                {reactive: false, style_class: 'cloud-sync-log-item'});
-            item.label.clutter_text.ellipsize = Pango.EllipsizeMode.MIDDLE;
-            item.label.style = 'max-width: 36em;';
-            this._logSection.addMenuItem(item);
-        }
+        for (const entry of log.slice(-count).reverse())
+            this._logSection.addMenuItem(logItem(entry, several));
     }
 
     _journalUnitArgs() {

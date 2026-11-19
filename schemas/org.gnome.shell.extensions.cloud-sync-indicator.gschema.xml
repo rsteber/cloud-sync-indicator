@@ -22,6 +22,11 @@
       <summary>Sign-in addresses</summary>
       <description>The address last used to sign in to each account, by systemd unit. Set by the sign-in window.</description>
     </key>
+    <key name="managed-accounts" type="a{sa{ss}}">
+      <default>{}</default>
+      <summary>Accounts created by the extension</summary>
+      <description>By systemd unit: the client's configuration directory (conf-dir), the synchronized folder (sync-dir) and whether the account is paused (paused). These accounts run as transient units that the extension starts.</description>
+    </key>
     <key name="known-accounts" type="as">
       <default>[]</default>
       <summary>Accounts found</summary>

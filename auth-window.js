@@ -4,7 +4,7 @@
 // Sign-in window for the OneDrive client – a standalone GJS script running in its own
 // process (GTK/WebKit must not be loaded into the gnome-shell process).
 //
-// Usage: gjs -m auth-window.js AUTH_URL RESPONSE_FILE
+// Usage: gjs -m auth-window.js AUTH_URL RESPONSE_FILE [--strict-code]
 //
 // Loads the Microsoft sign-in and intercepts the redirect to …/oauth2/nativeclient?code=…
 // before Microsoft redirects away from it. The full response address is written atomically
@@ -34,9 +34,11 @@ const EXIT_CLOSED = 10;
 const EXIT_REJECTED = 11;
 const EXIT_USAGE = 12;
 
-const [authUrl, responseFile] = System.programArgs;
+const [authUrl, responseFile, ...options] = System.programArgs;
+// For clients before 2.5.10, see check() below.
+const strictCode = options.includes('--strict-code');
 if (!authUrl?.startsWith('https://login.microsoftonline.com/') || !responseFile) {
-    printerr('Usage: gjs -m auth-window.js AUTH_URL RESPONSE_FILE');
+    printerr('Usage: gjs -m auth-window.js AUTH_URL RESPONSE_FILE [--strict-code]');
     System.exit(EXIT_USAGE);
 }
 
@@ -98,7 +100,15 @@ app.connect('activate', () => {
         // '+' means a space in the query; parse_params() only decodes %XX.
         const query = uri.split('?')[1].split('#')[0].replace(/\+/g, '%20');
         const params = GLib.Uri.parse_params(query, -1, '&', GLib.UriParamsFlags.NONE);
-        if (params.code) {
+        // Clients before 2.5.10 read the code with the pattern [\w\d-.]+ and cut it off at any
+        // other character. For personal accounts Microsoft returns long codes that contain
+        // e.g. '*', '!' or '$'; the client would pass on a truncated code and get AADSTS70000.
+        // Report that clearly instead (fixed in the client by abraunegg/onedrive#3625).
+        if (strictCode && params.code && !/^[\w.-]+$/.test(params.code)) {
+            printerr(_('Microsoft returned a sign-in code that this version of the client cannot ' +
+                'read. The client reads such codes from version 2.5.10 on – please update it.'));
+            exitCode = EXIT_REJECTED;
+        } else if (params.code) {
             GLib.file_set_contents(responseFile, `${uri}\n`);
             exitCode = EXIT_OK;
             if (loginName)
