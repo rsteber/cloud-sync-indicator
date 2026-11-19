@@ -37,7 +37,7 @@ const MANAGER_IFACE = 'org.freedesktop.systemd1.Manager';
 const DEFAULT_CONF_DIR = GLib.build_filenamev([GLib.get_user_config_dir(), 'onedrive']);
 const RUNNING = ['active', 'activating', 'reloading'];
 
-// Client log messages (v2.5.x).
+// Client log messages (2.5.4 to 2.5.12; some texts changed in between).
 const RE_SYNC_START = /Starting a sync with Microsoft OneDrive/;
 const RE_SYNC_DONE = /Sync with Microsoft OneDrive is complete/;
 // File operations, shown under "Recent Messages" when "file-operations-only" is set.
@@ -50,10 +50,20 @@ const RE_FILE_OP = new RegExp([
     '^Successfully created the remote directory ',
 ].join('|'));
 const RE_AUTH = /AADSTS\d+|invalid_grant|authori[sz]e this application|re-?authenticat|refresh[_ ]token.*(invalid|expired|missing)/i;
-const RE_OFFLINE = /Cannot connect to Microsoft OneDrive|Unable to (reach|access) Microsoft OneDrive|network connection.*(not |un)available|Internet connectivity.*(lost|unavailable)/i;
-const RE_ONLINE = /Successfully reached Microsoft OneDrive/;
-// Messages of every sync cycle that would only clutter the full message list.
-const RE_ROUTINE = /Microsoft OneDrive Login Service|^Starting a sync|^Syncing changes from|is complete$/;
+const RE_OFFLINE = /Cannot connect to (the )?Microsoft OneDrive|Unable to (reach|access) (the )?Microsoft OneDrive|network connection.*(not |un)available|Internet connectivity.*(lost|unavailable|interrupted)/i;
+const RE_ONLINE = /Successfully reached (the )?Microsoft OneDrive|Internet connectivity.*restored/i;
+// Messages of every sync cycle (and the monitor's startup summary) that would only clutter
+// the full message list.
+const RE_ROUTINE = new RegExp([
+    'Microsoft OneDrive (Login )?Service$',
+    '^Starting a sync',
+    '^Syncing changes from',
+    'is complete$',
+    '^Monitor mode is active',
+    '^(Local filesystem monitoring|Remote change notifications|Scheduled reconciliation interval):',
+].join('|'));
+// Exit status of the client when a resync is required: 126 up to 2.5.11, 78 from 2.5.12.
+const RESYNC_EXIT = [126, 78];
 
 const STATES = {
     ok: {icon: 'weather-overcast-symbolic', text: N_('Up to date')},
@@ -884,7 +894,8 @@ class Account {
             'systemd-run', '--user', `--unit=${this.unit}`,
             `--description=OneDrive Client for Linux (${this.name})`,
             '-p', 'After=network-online.target', '-p', 'Wants=network-online.target',
-            '-p', 'Restart=on-failure', '-p', 'RestartSec=3', '-p', 'RestartPreventExitStatus=126',
+            '-p', 'Restart=on-failure', '-p', 'RestartSec=3',
+            '-p', `RestartPreventExitStatus=${RESYNC_EXIT.join(' ')}`,
             '-p', 'TimeoutStopSec=90', '-p', 'ProtectSystem=full',
             onedrive, '--monitor', '--disable-notifications', ...this.clientArgs,
         ], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
@@ -987,7 +998,7 @@ class Account {
     }
 
     // The client reads its configuration only at startup; version 2.5.4 requires a resync
-    // after almost any change (exit 126).
+    // after almost any change (exit status 126, or 78 from 2.5.12).
     _configChanged() {
         const source = MessageTray.getSystemSource();
         const notification = new MessageTray.Notification({
@@ -1029,7 +1040,7 @@ class Account {
         case 'deactivating':
             return ['stopping', null];
         case 'failed':
-            if (p.status === 126)
+            if (RESYNC_EXIT.includes(p.status))
                 return ['resync', _('Use “Resync” – or run in a terminal: onedrive --sync --resync')];
             // The client exits with status 15 on SIGTERM – a normal stop.
             if (p.status === 15 || p.result === 'success')

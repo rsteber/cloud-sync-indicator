@@ -17,7 +17,8 @@ running as a systemd user service (`onedrive.service`).
 - **Sign-in:** a dedicated sign-in window (WebKitGTK) that passes the response address of the
   Microsoft sign-in to the client by itself. Fallback: sign in using the browser and take the
   response address from the clipboard.
-- **Resync:** when the client requires one (exit status 126), it can be started from the menu.
+- **Resync:** when the client requires one (exit status 126, or 78 from client 2.5.12), it can
+  be started from the menu.
   It runs as a separate systemd unit and starts the service again afterwards.
 - **Several accounts:** add and remove accounts from the menu; client instances set up by
   hand as systemd user units are found automatically (see [Several accounts](#several-accounts)).
@@ -28,8 +29,8 @@ running as a systemd user service (`onedrive.service`).
 ## Requirements
 
 - GNOME Shell 48
-- `onedrive` (abraunegg, tested with 2.5.4) with the user service `onedrive.service`
-  and its configuration in `~/.config/onedrive`
+- `onedrive` (abraunegg, tested with 2.5.4 and 2.5.12; personal accounts need 2.5.10 or
+  later) with the user service `onedrive.service` and its configuration in `~/.config/onedrive`
 - For the sign-in window: GJS with GTK 4, libadwaita and WebKitGTK 6.0
   (Debian/Ubuntu: `gir1.2-webkit-6.0`, `gir1.2-adw-1`, `gir1.2-gtk-4.0`).
   Without them, sign-in falls back to the browser.
@@ -86,7 +87,7 @@ Wants=network-online.target
 ExecStart=/usr/bin/onedrive --monitor --disable-notifications --confdir="/home/USER/.config/onedrive-work"
 Restart=on-failure
 RestartSec=3
-RestartPreventExitStatus=126
+RestartPreventExitStatus=126 78
 TimeoutStopSec=90
 
 [Install]
@@ -124,10 +125,10 @@ cp extras/dev.steber.CloudSyncIndicator.Login.desktop ~/.local/share/application
 cp extras/dev.steber.CloudSyncIndicator.Login.svg ~/.local/share/icons/hicolor/scalable/apps/
 ```
 
-## Known quirks of the client (2.5.4)
+## Known quirks of the client
 
 - Even small changes to `~/.config/onedrive/config` can require a resync
-  (the service then exits with status 126).
+  (the service then exits with status 126, or 78 from client 2.5.12).
 - `onedrive --reauth` discards the existing sign-in right away, not only on success.
   Cancelling the sign-in leaves you signed out.
 - **Personal accounts cannot sign in with clients before 2.5.10.** Microsoft returns long
