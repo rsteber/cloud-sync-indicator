@@ -29,14 +29,11 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 // being loaded, the extension's translation domain is not bound yet.
 const N_ = s => s;
 
-const UNIT = 'onedrive.service';
-const RESYNC_UNIT = 'cloud-sync-indicator-resync.service';
+const DEFAULT_UNIT = 'onedrive.service';
 const SYSTEMD = 'org.freedesktop.systemd1';
 const MANAGER_PATH = '/org/freedesktop/systemd1';
 const MANAGER_IFACE = 'org.freedesktop.systemd1.Manager';
-const CONF_DIR = GLib.build_filenamev([GLib.get_user_config_dir(), 'onedrive']);
-const TOKEN_FILE = GLib.build_filenamev([CONF_DIR, 'refresh_token']);
-const CONFIG_FILE = GLib.build_filenamev([CONF_DIR, 'config']);
+const DEFAULT_CONF_DIR = GLib.build_filenamev([GLib.get_user_config_dir(), 'onedrive']);
 const RUNNING = ['active', 'activating', 'reloading'];
 
 // Client log messages (v2.5.x).
@@ -54,7 +51,6 @@ const RE_FILE_OP = new RegExp([
 const RE_AUTH = /AADSTS\d+|invalid_grant|authori[sz]e this application|re-?authenticat|refresh[_ ]token.*(invalid|expired|missing)/i;
 const RE_OFFLINE = /Cannot connect to Microsoft OneDrive|Unable to (reach|access) Microsoft OneDrive|network connection.*(not |un)available|Internet connectivity.*(lost|unavailable)/i;
 const RE_ONLINE = /Successfully reached Microsoft OneDrive/;
-const RE_UNIT_STARTED = /^Started onedrive\.service/;
 // Messages of every sync cycle that would only clutter the full message list.
 const RE_ROUTINE = /Microsoft OneDrive Login Service|^Starting a sync|^Syncing changes from|is complete$/;
 
@@ -115,7 +111,7 @@ async function getProps(path, iface, keys) {
     return out;
 }
 
-function unitJob(method, unit = UNIT) {
+function unitJob(method, unit) {
     return dbusCall(MANAGER_PATH, MANAGER_IFACE, method,
         new GLib.Variant('(ss)', [unit, 'replace']), '(o)');
 }
@@ -144,13 +140,6 @@ function writeText(path, text) {
     return Gio.File.new_for_path(path).replace_contents_bytes_async(
         new GLib.Bytes(new TextEncoder().encode(text)), null, false,
         Gio.FileCreateFlags.PRIVATE, null);
-}
-
-async function syncDir() {
-    const conf = await readText(CONFIG_FILE) ?? '';
-    const m = conf.match(/^\s*sync_dir\s*=\s*"([^"]*)"/m);
-    const dir = m ? m[1] : '~/OneDrive';
-    return dir.startsWith('~') ? GLib.get_home_dir() + dir.slice(1) : dir;
 }
 
 function formatTime(dt) {
@@ -224,8 +213,8 @@ class ConfirmDialog extends ModalDialog.ModalDialog {
 // immediately. Only the confirmation is modal, so the sign-in window and browser stay usable.
 
 class AuthFlow {
-    constructor(indicator) {
-        this._indicator = indicator;
+    constructor(account) {
+        this._account = account;
         this._cancellable = new Gio.Cancellable();
         this._client = null;
         this._clientDone = null;
@@ -237,7 +226,8 @@ class AuthFlow {
         this._ended = false;
         this.waitingForClipboard = false;
 
-        const dir = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'cloud-sync-indicator-auth']);
+        const dir = GLib.build_filenamev([GLib.get_user_runtime_dir(),
+            `cloud-sync-indicator-auth-${account.id}`]);
         this._dir = Gio.File.new_for_path(dir);
         this._urlFile = GLib.build_filenamev([dir, 'auth-url']);
         this._respFile = GLib.build_filenamev([dir, 'response-url']);
@@ -250,18 +240,18 @@ class AuthFlow {
                 throw new Error(_('The “onedrive” client is not installed.'));
             await this._prepareDir();
 
-            this._wasRunning = await this._indicator.isServiceRunning();
+            this._wasRunning = await this._account.isServiceRunning();
             if (this._wasRunning) {
-                this._indicator.setAuthHint(_('Stopping OneDrive …'));
-                await this._indicator.stopServiceAndWait(this._cancellable);
+                this._account.setAuthHint(_('Stopping OneDrive …'));
+                await this._account.stopServiceAndWait(this._cancellable);
             }
 
             // --reauth discards the existing sign-in right away, not only on success.
-            const argv = [onedrive];
-            if (await exists(TOKEN_FILE))
+            const argv = [onedrive, ...this._account.clientArgs];
+            if (await exists(this._account.tokenFile))
                 argv.push('--reauth');
             argv.push('--auth-files', `${this._urlFile}:${this._respFile}`);
-            this._indicator.setAuthHint(_('Requesting sign-in address …'));
+            this._account.setAuthHint(_('Requesting sign-in address …'));
             this._client = Gio.Subprocess.new(argv,
                 Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE |
                 Gio.SubprocessFlags.STDERR_MERGE);
@@ -302,7 +292,7 @@ class AuthFlow {
     // auth-window.js is not imported: WebKitGTK cannot be loaded into the shell process,
     // so it runs as a separate GJS process.
     async _runLoginWindow() {
-        const script = GLib.build_filenamev([this._indicator.extensionPath, 'auth-window.js']);
+        const script = GLib.build_filenamev([this._account.extensionPath, 'auth-window.js']);
         let win;
         try {
             win = Gio.Subprocess.new(['gjs', '-m', script, this._authUrl, this._respFile],
@@ -312,7 +302,7 @@ class AuthFlow {
             return;
         }
         this._loginWin = win;
-        this._indicator.setAuthHint(_('Sign in using the sign-in window'));
+        this._account.setAuthHint(_('Sign in using the sign-in window'));
         const [, output] = await win.communicate_utf8_async(null, this._cancellable);
         if (this._loginWin !== win)
             return; // cancelled
@@ -348,7 +338,7 @@ class AuthFlow {
 
     _askForClipboard(reason) {
         this.waitingForClipboard = true;
-        this._indicator.setAuthHint(_('Copy the response address from the browser'));
+        this._account.setAuthHint(_('Copy the response address from the browser'));
         this._showNotification(fmt(_('%s Sign in using the browser'), reason),
             _('After signing in, copy the address of the blank page (…/nativeclient?code=…) – ' +
               'if the page redirects, it is in the browser history – then choose ' +
@@ -377,7 +367,7 @@ class AuthFlow {
 
     async _finish() {
         this._clearNotification();
-        this._indicator.setAuthHint(_('Completing sign-in …'));
+        this._account.setAuthHint(_('Completing sign-in …'));
         const started = Date.now() - 10000;
         const timeout = new Gio.Cancellable();
         try {
@@ -389,8 +379,8 @@ class AuthFlow {
             ]);
             if (!await this._tokenWrittenSince(started))
                 throw new Error(lastLines(output) || _('No sign-in token was saved.'));
-            this._indicator.authSucceeded();
-            Main.notify('OneDrive', _('Signed in. Restarting OneDrive.'));
+            this._account.authSucceeded();
+            Main.notify(this._account.title, _('Signed in. Restarting OneDrive.'));
             await this._end(true);
         } catch (e) {
             if (!this._cancellable.is_cancelled())
@@ -402,7 +392,7 @@ class AuthFlow {
 
     async _tokenWrittenSince(ms) {
         try {
-            const info = await Gio.File.new_for_path(TOKEN_FILE).query_info_async(
+            const info = await Gio.File.new_for_path(this._account.tokenFile).query_info_async(
                 'time::modified', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
             return info.get_modification_date_time().to_unix() * 1000 >= ms;
         } catch {
@@ -420,7 +410,7 @@ class AuthFlow {
         if (this._ended)
             return;
         this._cancellable.cancel();
-        Main.notify('OneDrive', _('Sign-in cancelled.'));
+        Main.notify(this._account.title, _('Sign-in cancelled.'));
         this._end(false).catch(logError);
     }
 
@@ -441,9 +431,9 @@ class AuthFlow {
         this._killProcs();
         this._clearNotification();
         await this._removeFiles();
-        this._indicator.authEnded(this);
+        this._account.authEnded(this);
         if (startService || this._wasRunning)
-            await this._indicator.startService();
+            await this._account.startService();
     }
 
     _killProcs() {
@@ -491,6 +481,501 @@ class AuthFlow {
 }
 
 // ---------------------------------------------------------------------------
+// One-shot named timers; scheduling the same name again replaces the old one.
+
+class Timers {
+    constructor() {
+        this._sources = new Map(); // name → GLib source
+    }
+
+    schedule(name, ms, callback) {
+        this.unschedule(name);
+        this._sources.set(name, GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
+            this._sources.delete(name);
+            callback();
+            return GLib.SOURCE_REMOVE;
+        }));
+    }
+
+    unschedule(name) {
+        const id = this._sources.get(name);
+        if (id) {
+            GLib.source_remove(id);
+            this._sources.delete(name);
+        }
+    }
+
+    clear() {
+        for (const id of this._sources.values())
+            GLib.source_remove(id);
+        this._sources.clear();
+    }
+}
+
+// Object path of a unit, derived from its name. Unlike LoadUnit, this does not create a
+// placeholder unit (which would trigger UnitNew/UnitRemoved).
+function unitObjectPath(unit) {
+    return `${MANAGER_PATH}/unit/${unit.replace(/[^A-Za-z0-9]/g,
+        c => `_${c.charCodeAt(0).toString(16).padStart(2, '0')}`)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Account: one instance of the client – a systemd user unit with its own configuration
+// directory. Keeps the state of that instance; the indicator only displays it.
+
+class Account {
+    constructor(indicator, {unit, confDir, clientArgs}) {
+        this._indicator = indicator;
+        this.unit = unit;
+        this.id = unit.replace(/\.service$/, '');
+        this.resyncUnit = `cloud-sync-indicator-resync-${this.id}.service`;
+        this.confDir = confDir;
+        this.tokenFile = GLib.build_filenamev([confDir, 'refresh_token']);
+        this.configFile = GLib.build_filenamev([confDir, 'config']);
+        // Arguments that select this account's configuration, e.g. ['--confdir', …].
+        this.clientArgs = clientArgs;
+        this.extensionPath = indicator.extensionPath;
+
+        this.props = {};
+        this.hasToken = true;
+        this.resyncRunning = false;
+        this.auth = null;
+        this.authHint = null;
+        this.stateKey = null;
+        this.resetJournalState();
+
+        this._unitPath = null;
+        this._signalIds = [];
+        this._confMonitor = null;
+        this._confMonitorId = 0;
+        this._cancellable = new Gio.Cancellable();
+        this._timers = new Timers();
+    }
+
+    get title() {
+        return this._indicator.titleFor(this);
+    }
+
+    start() {
+        this._watchConfDir();
+        this._initDBus().catch(e => this._dbusFailed(e));
+    }
+
+    _changed() {
+        if (!this._cancellable.is_cancelled())
+            this._indicator.accountChanged(this);
+    }
+
+    async syncDir() {
+        const conf = await readText(this.configFile) ?? '';
+        const m = conf.match(/^\s*sync_dir\s*=\s*"([^"]*)"/m);
+        const dir = m ? m[1] : '~/OneDrive';
+        return dir.startsWith('~') ? GLib.get_home_dir() + dir.slice(1) : dir;
+    }
+
+    openFolder() {
+        this.syncDir().then(dir => this._launch(Gio.File.new_for_path(dir).get_uri()));
+    }
+
+    editConfig() {
+        this._launch(Gio.File.new_for_path(this.configFile).get_uri());
+    }
+
+    _launch(uri) {
+        try {
+            launchUri(uri);
+        } catch (e) {
+            this._notifyError(e);
+        }
+    }
+
+    _notifyError(e) {
+        Main.notify(this.title, e.message ?? String(e));
+    }
+
+    // --- systemd -----------------------------------------------------------
+
+    async _initDBus() {
+        // Without Subscribe, systemd sends no PropertiesChanged signals. There is no Unsubscribe
+        // in disable(), because the subscription belongs to the shell's shared D-Bus connection.
+        // For the same reason it is still active when the extension is enabled again (e.g. after
+        // the screen was locked, or for a second account), and systemd then answers
+        // "AlreadySubscribed".
+        try {
+            await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null);
+        } catch (e) {
+            if (!Gio.DBusError.get_remote_error(e)?.endsWith('.AlreadySubscribed'))
+                throw e;
+        }
+        const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
+            new GLib.Variant('(s)', [this.unit]), '(o)')).deepUnpack();
+        if (this._cancellable.is_cancelled())
+            return;
+        this._unitPath = path;
+
+        const refresh = () => this._timers.schedule('refresh', 150, () =>
+            this._refresh().catch(e => this._dbusFailed(e)));
+        const bus = Gio.DBus.session;
+        this._signalIds = [
+            bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+                path, null, Gio.DBusSignalFlags.NONE, refresh),
+            bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+                unitObjectPath(this.resyncUnit), null, Gio.DBusSignalFlags.NONE, refresh),
+            bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitNew', MANAGER_PATH,
+                this.resyncUnit, Gio.DBusSignalFlags.NONE, refresh),
+            bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitRemoved', MANAGER_PATH,
+                this.resyncUnit, Gio.DBusSignalFlags.NONE, refresh),
+        ];
+        await this._refresh();
+    }
+
+    _dbusFailed(e) {
+        if (this._cancellable.is_cancelled())
+            return;
+        logError(e, `cloud-sync-indicator: systemd not reachable (${this.unit})`);
+        this.props = {};
+        this._changed();
+        // Setup did not finish: try again later instead of staying in "unknown".
+        if (!this._unitPath) {
+            this._timers.schedule('dbus-retry', 30000, () =>
+                this._initDBus().catch(err => this._dbusFailed(err)));
+        }
+    }
+
+    async _refresh() {
+        if (!this._unitPath)
+            return;
+        const unit = await getProps(this._unitPath, 'org.freedesktop.systemd1.Unit',
+            ['ActiveState', 'SubState', 'LoadState']);
+        const svc = await getProps(this._unitPath, 'org.freedesktop.systemd1.Service',
+            ['Result', 'ExecMainStatus', 'NRestarts']);
+        // ListUnitsByPatterns returns loaded units only and does not load any itself.
+        const [units] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ListUnitsByPatterns',
+            new GLib.Variant('(asas)', [[], [this.resyncUnit]]), '(a(ssssssouso))')).deepUnpack();
+        if (this._cancellable.is_cancelled())
+            return;
+
+        this.props = {
+            active: unit.ActiveState,
+            sub: unit.SubState,
+            load: unit.LoadState,
+            result: svc.Result,
+            status: svc.ExecMainStatus,
+            restarts: svc.NRestarts,
+        };
+        const resyncActive = units.some(u => ['active', 'activating', 'deactivating'].includes(u[3]));
+        if (this.resyncRunning && !resyncActive)
+            this._resyncEnded();
+        this.resyncRunning = resyncActive;
+        this._changed();
+    }
+
+    get running() {
+        return RUNNING.includes(this.props.active);
+    }
+
+    async isServiceRunning() {
+        await this._refresh();
+        return this.running;
+    }
+
+    async stopServiceAndWait(cancellable) {
+        await unitJob('StopUnit', this.unit);
+        // The client finishes running transfers first (TimeoutStopSec=90 in the unit).
+        for (let i = 0; i < 240; i++) {
+            await this._refresh();
+            if (['inactive', 'failed'].includes(this.props.active))
+                return;
+            await sleep(500, cancellable);
+        }
+        throw new Error(_('OneDrive could not be stopped.'));
+    }
+
+    async startService() {
+        try {
+            await unitJob('StartUnit', this.unit);
+        } catch (e) {
+            this._notifyError(e);
+        }
+    }
+
+    toggleService() {
+        unitJob(this.running ? 'StopUnit' : 'StartUnit', this.unit)
+            .catch(e => this._notifyError(e));
+    }
+
+    restartService() {
+        unitJob('RestartUnit', this.unit).catch(e => this._notifyError(e));
+    }
+
+    // --- Journal -----------------------------------------------------------
+
+    // Before the journal is read (again) from the start.
+    resetJournalState() {
+        this.syncing = false;
+        this.offline = false;
+        this.authError = false;
+        this.lastSync = null;
+        this.lastActivity = null;
+        this.log = [];       // all messages except routine lines
+        this.fileLog = [];   // file operations only
+    }
+
+    handleMessage(time, msg) {
+        if (msg.startsWith(`Started ${this.unit}`)) {
+            this.syncing = false;
+            this.offline = false;
+        } else if (RE_SYNC_START.test(msg)) {
+            this.syncing = true;
+        } else if (RE_SYNC_DONE.test(msg)) {
+            this.syncing = false;
+            this.authError = false;
+            this.lastSync = time;
+        }
+        if (RE_AUTH.test(msg))
+            this.authError = true;
+        if (RE_OFFLINE.test(msg))
+            this.offline = true;
+        else if (RE_ONLINE.test(msg))
+            this.offline = false;
+
+        // Both lists are kept, so that switching the setting takes effect immediately.
+        const entry = {time, msg, account: this};
+        if (RE_FILE_OP.test(msg)) {
+            this.lastActivity = entry;
+            this._pushLog(this.fileLog, entry);
+        }
+        if (!RE_ROUTINE.test(msg))
+            this._pushLog(this.log, entry);
+    }
+
+    _pushLog(list, entry) {
+        list.push(entry);
+        if (list.length > this._indicator.logMax)
+            list.shift();
+    }
+
+    // --- Config directory --------------------------------------------------
+
+    // Watches the config directory: the sign-in token (refresh_token) and the configuration.
+    _watchConfDir() {
+        this._checkToken();
+        try {
+            this._confMonitor = Gio.File.new_for_path(this.confDir).monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES, null);
+            this._confMonitorId = this._confMonitor.connect('changed', (_monitor, file, other, event) => {
+                const names = [file?.get_basename(), other?.get_basename()];
+                if (names.includes('refresh_token'))
+                    this._checkToken();
+                if (names.includes('config') && [Gio.FileMonitorEvent.CHANGES_DONE_HINT,
+                    Gio.FileMonitorEvent.RENAMED, Gio.FileMonitorEvent.MOVED_IN,
+                    Gio.FileMonitorEvent.CREATED].includes(event))
+                    // Editors often save in several steps – collect them briefly.
+                    this._timers.schedule('config-notice', 2000, () => this._configChanged());
+            });
+        } catch (e) {
+            logError(e, 'cloud-sync-indicator: watching config directory');
+        }
+    }
+
+    async _checkToken() {
+        const found = await exists(this.tokenFile);
+        if (this._cancellable.is_cancelled())
+            return;
+        this.hasToken = found;
+        this._changed();
+    }
+
+    // The client reads its configuration only at startup; version 2.5.4 requires a resync
+    // after almost any change (exit 126).
+    _configChanged() {
+        const source = MessageTray.getSystemSource();
+        const notification = new MessageTray.Notification({
+            source,
+            title: _('OneDrive configuration changed'),
+            body: _('The change takes effect after the client restarts. ' +
+                    'Version 2.5.4 then usually requires a resync.'),
+        });
+        notification.addAction(_('Restart Now'), () => this.restartService());
+        source.addNotification(notification);
+    }
+
+    // --- State -------------------------------------------------------------
+
+    computeState() {
+        const p = this.props;
+        if (!p.active)
+            return ['unknown', _('systemd service not reachable')];
+        if (p.load === 'not-found')
+            return ['error', fmt(_('%s is not installed'), this.unit)];
+        if (this.auth)
+            return ['auth', this.authHint ?? _('Signing in …')];
+        if (this.resyncRunning)
+            return ['resyncing', _('Rebuilding the local database – this may take a while')];
+        if (!this.hasToken || this.authError)
+            return ['auth', _('Sign in again via “Sign In …”')];
+
+        switch (p.active) {
+        case 'active':
+        case 'reloading':
+            if (this.offline)
+                return ['offline', _('The client keeps retrying')];
+            return [this.syncing ? 'syncing' : 'ok', null];
+        case 'activating':
+            if (p.sub === 'auto-restart' || p.restarts >= 2)
+                return ['error', fmt(_('Restarting repeatedly (%s×) – see recent messages'), p.restarts)];
+            return ['starting', null];
+        case 'deactivating':
+            return ['stopping', null];
+        case 'failed':
+            if (p.status === 126)
+                return ['resync', _('Use “Resync …” – or run in a terminal: onedrive --sync --resync')];
+            // The client exits with status 15 on SIGTERM – a normal stop.
+            if (p.status === 15 || p.result === 'success')
+                return ['paused', null];
+            return ['error', fmt(_('Exited with status %s (%s)'), p.status, p.result)];
+        default:
+            return ['paused', null];
+        }
+    }
+
+    // Called after each update outside the journal replay: notifies when the account enters
+    // a state that needs attention.
+    noteState(key, hint) {
+        if (key === this.stateKey)
+            return;
+        const previous = this.stateKey;
+        this.stateKey = key;
+        const state = STATES[key];
+        if (state.notify && previous !== null && !this.auth) {
+            const text = _(state.text);
+            Main.notify(this.title, hint ? `${text} – ${hint}` : text);
+        }
+    }
+
+    // At the end of the replay, an error that already exists should still be reported.
+    replayEnded() {
+        this.stateKey ??= 'unknown';
+    }
+
+    // --- Sign-in -----------------------------------------------------------
+
+    authAction() {
+        this._indicator.menu.close();
+        if (this.auth) {
+            this.auth.cancel();
+            return;
+        }
+        new ConfirmDialog({
+            title: this.hasToken ? _('Sign In to OneDrive Again') : _('Sign In to OneDrive'),
+            description: [
+                _('OneDrive will be stopped briefly.'),
+                this.hasToken ? _('The current sign-in will be discarded.') : '',
+                _('After “Continue”, a separate sign-in window with the Microsoft sign-in ' +
+                  'opens. It closes by itself once you have signed in.'),
+            ].filter(Boolean).join('\n\n'),
+        }, () => {
+            if (this.auth || this._cancellable.is_cancelled())
+                return;
+            this.auth = new AuthFlow(this);
+            this.authHint = null;
+            this._changed();
+            this.auth.run().catch(logError);
+        }).open();
+    }
+
+    setAuthHint(text) {
+        this.authHint = text;
+        this._changed();
+    }
+
+    authEnded(flow) {
+        if (this.auth === flow) {
+            this.auth = null;
+            this.authHint = null;
+        }
+        this._changed();
+    }
+
+    authSucceeded() {
+        this.authError = false;
+    }
+
+    // --- Resync ------------------------------------------------------------
+
+    resyncAction() {
+        this._indicator.menu.close();
+        new ConfirmDialog({
+            title: _('Resync OneDrive'),
+            description: [
+                _('The client requires a resync. The local sync database is discarded and ' +
+                  'rebuilt, and all files online and locally are compared again. Depending on ' +
+                  'the amount of data, this may take a while.'),
+                _('No files are deleted. If a file differs locally and online, the client ' +
+                  'keeps both versions (the local one as a backup copy).'),
+                _('The resync runs independently of the shell as a separate systemd unit; ' +
+                  'afterwards OneDrive continues as usual.'),
+            ].join('\n\n'),
+            okLabel: _('Start Resync'),
+        }, () => this._startResync()).open();
+    }
+
+    // Run as a transient systemd unit, so the resync survives a restart of the shell.
+    async _startResync() {
+        try {
+            const onedrive = GLib.find_program_in_path('onedrive');
+            if (!onedrive)
+                throw new Error(_('The “onedrive” client is not installed.'));
+            if (await this.isServiceRunning())
+                throw new Error(_('OneDrive is running – resync only when the client asks for it.'));
+            const proc = Gio.Subprocess.new([
+                'systemd-run', '--user', `--unit=${this.resyncUnit}`, '--collect',
+                '--description=OneDrive resync (Cloud Sync Indicator)', '-p', 'ProtectSystem=full',
+                // On success, start the service from within the unit, not from the shell.
+                // Paths and unit names are passed as arguments, never as part of the script.
+                '/bin/sh', '-c', 'unit=$1; shift; "$0" "$@" && exec systemctl --user start "$unit"',
+                onedrive, this.unit, '--sync', '--resync', '--resync-auth', ...this.clientArgs,
+            ], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
+            const [, out] = await proc.communicate_utf8_async(null, this._cancellable);
+            if (!proc.get_successful())
+                throw new Error(lastLines(out) || _('systemd-run failed.'));
+            this.resyncRunning = true;
+            this._changed();
+        } catch (e) {
+            if (!this._cancellable.is_cancelled())
+                this._notifyError(e);
+        }
+    }
+
+    // The unit's result cannot be queried (--collect removes it at once). On success it has
+    // started the service – that tells us the outcome.
+    _resyncEnded() {
+        this._timers.schedule('resync-result', 3000, () => {
+            Main.notify(this.title, this.running
+                ? _('Resync finished, OneDrive is running again.')
+                : _('Resync failed – see “Full Log in Terminal”.'));
+        });
+    }
+
+    destroy() {
+        this._cancellable.cancel();
+        this.auth?.abort();
+        this.auth = null;
+        this._timers.clear();
+        if (this._confMonitorId)
+            this._confMonitor.disconnect(this._confMonitorId);
+        this._confMonitor?.cancel();
+        this._confMonitor = null;
+        this._confMonitorId = 0;
+        for (const id of this._signalIds)
+            Gio.DBus.session.signal_unsubscribe(id);
+        this._signalIds = [];
+        this.log = [];
+        this.fileLog = [];
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Panel indicator
 
 const SyncIndicator = GObject.registerClass(
@@ -499,32 +984,14 @@ class SyncIndicator extends PanelMenu.Button {
         super._init(0.0, 'Cloud Sync Indicator', false);
         this.extensionPath = extension.path;
         this._settings = extension.getSettings();
-        this._logMax = this._settings.settings_schema.get_key('log-entries')
+        this.logMax = this._settings.settings_schema.get_key('log-entries')
             .get_range().deepUnpack()[1].deepUnpack()[1];
         this._cancellable = new Gio.Cancellable();
-
-        this._unitPath = null;
-        this._props = {};
-        this._hasToken = true;
-        this._syncing = false;
-        this._offline = false;
-        this._authError = false;
-        this._lastSync = null;
-        this._lastActivity = null;
-        this._log = [];       // all messages except routine lines
-        this._fileLog = [];   // file operations only
+        this._timers = new Timers();
         this._decoder = new TextDecoder();
-        this._stateKey = null;
         this._replaying = false;
-        this._resyncRunning = false;
-        this._auth = null;
-        this._authHint = null;
         this._journal = null;
-        this._confMonitor = null;
-        this._confMonitorId = 0;
         this._menuOpenId = 0;
-        this._signalIds = [];
-        this._sources = new Map(); // name → GLib source, see _schedule()
 
         // Compact like AppIndicator icons in their “compact mode”.
         this.set_style('-natural-hpadding: 10px');
@@ -536,27 +1003,27 @@ class SyncIndicator extends PanelMenu.Button {
         this.add_child(this._icon);
 
         this._buildMenu();
-        this._watchConfDir();
-        this._initDBus().catch(e => this._dbusFailed(e));
+        this._accounts = [new Account(this, {
+            unit: DEFAULT_UNIT,
+            confDir: DEFAULT_CONF_DIR,
+            clientArgs: [],
+        })];
+        for (const account of this._accounts)
+            account.start();
         this._startJournal();
     }
 
-    // One-shot named timers; scheduling the same name again replaces the old one.
-    _schedule(name, ms, callback) {
-        this._unschedule(name);
-        this._sources.set(name, GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
-            this._sources.delete(name);
-            callback();
-            return GLib.SOURCE_REMOVE;
-        }));
+    // The single account for now.
+    get _account() {
+        return this._accounts[0];
     }
 
-    _unschedule(name) {
-        const id = this._sources.get(name);
-        if (id) {
-            GLib.source_remove(id);
-            this._sources.delete(name);
-        }
+    titleFor(_account) {
+        return 'OneDrive';
+    }
+
+    accountChanged(_account) {
+        this._update();
     }
 
     _buildMenu() {
@@ -568,23 +1035,22 @@ class SyncIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._detailItem);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        this.menu.addAction(_('Open OneDrive Folder'),
-            () => syncDir().then(dir => this._launch(Gio.File.new_for_path(dir).get_uri())),
+        this.menu.addAction(_('Open OneDrive Folder'), () => this._account.openFolder(),
             'folder-symbolic');
-        this.menu.addAction(_('Edit Configuration'),
-            () => this._launch(Gio.File.new_for_path(CONFIG_FILE).get_uri()),
+        this.menu.addAction(_('Edit Configuration'), () => this._account.editConfig(),
             'document-edit-symbolic');
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._toggleItem = this.menu.addAction('', () => this._toggleService(),
+        this._toggleItem = this.menu.addAction('', () => this._account.toggleService(),
             'media-playback-pause-symbolic');
-        this._resyncItem = this.menu.addAction(_('Resync …'), () => this._resyncAction(),
+        this._resyncItem = this.menu.addAction(_('Resync …'), () => this._account.resyncAction(),
             'view-refresh-symbolic');
-        this._restartItem = this.menu.addAction(_('Restart'), () => this._restartService(),
+        this._restartItem = this.menu.addAction(_('Restart'), () => this._account.restartService(),
             'system-reboot-symbolic');
         this._clipItem = this.menu.addAction(_('Sign in from clipboard'),
-            () => this._auth?.fromClipboard(), 'edit-paste-symbolic');
-        this._authItem = this.menu.addAction('', () => this._authAction(), 'dialog-password-symbolic');
+            () => this._account.auth?.fromClipboard(), 'edit-paste-symbolic');
+        this._authItem = this.menu.addAction('', () => this._account.authAction(),
+            'dialog-password-symbolic');
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._logMenu = new PopupMenu.PopupSubMenuMenuItem(_('Recent Messages'), true);
@@ -603,7 +1069,9 @@ class SyncIndicator extends PanelMenu.Button {
 
     _fillLog() {
         this._logSection.removeAll();
-        const log = this._settings.get_boolean('file-operations-only') ? this._fileLog : this._log;
+        const fileOps = this._settings.get_boolean('file-operations-only');
+        const log = this._accounts.flatMap(a => fileOps ? a.fileLog : a.log)
+            .sort((a, b) => a.time.compare(b.time));
         if (log.length === 0) {
             this._logSection.addMenuItem(new PopupMenu.PopupMenuItem(_('(none)'), {reactive: false}));
             return;
@@ -618,14 +1086,12 @@ class SyncIndicator extends PanelMenu.Button {
         }
     }
 
-    _pushLog(list, entry) {
-        list.push(entry);
-        if (list.length > this._logMax)
-            list.shift();
+    _journalUnitArgs() {
+        return this._accounts.flatMap(a => ['-u', a.unit, '-u', a.resyncUnit]);
     }
 
     _openJournalInTerminal() {
-        const command = ['journalctl', '--user', '-u', UNIT, '-u', RESYNC_UNIT, '-n', '200', '-f'];
+        const command = ['journalctl', '--user', ...this._journalUnitArgs(), '-n', '200', '-f'];
         const terminal = TERMINALS.find(([name]) => GLib.find_program_in_path(name));
         if (!terminal) {
             Main.notify('OneDrive', fmt(_('No terminal found. Command: %s'), command.join(' ')));
@@ -634,144 +1100,25 @@ class SyncIndicator extends PanelMenu.Button {
         try {
             Gio.Subprocess.new([...terminal, ...command], Gio.SubprocessFlags.NONE);
         } catch (e) {
-            this._notifyError(e);
+            Main.notify('OneDrive', e.message);
         }
-    }
-
-    _launch(uri) {
-        try {
-            launchUri(uri);
-        } catch (e) {
-            this._notifyError(e);
-        }
-    }
-
-    // --- systemd -----------------------------------------------------------
-
-    async _initDBus() {
-        // Without Subscribe, systemd sends no PropertiesChanged signals. There is no Unsubscribe
-        // in disable(), because the subscription belongs to the shell's shared D-Bus connection.
-        // For the same reason it is still active when the extension is enabled again (e.g. after
-        // the screen was locked), and systemd then answers "AlreadySubscribed".
-        try {
-            await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'Subscribe', null);
-        } catch (e) {
-            if (!Gio.DBusError.get_remote_error(e)?.endsWith('.AlreadySubscribed'))
-                throw e;
-        }
-        const [path] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'LoadUnit',
-            new GLib.Variant('(s)', [UNIT]), '(o)')).deepUnpack();
-        if (this._cancellable.is_cancelled())
-            return;
-        this._unitPath = path;
-
-        // Derive the resync unit's object path from its name instead of calling LoadUnit:
-        // loading would create a placeholder unit and trigger UnitNew/UnitRemoved.
-        const resyncPath = `${MANAGER_PATH}/unit/${RESYNC_UNIT.replace(/[^A-Za-z0-9]/g,
-            c => `_${c.charCodeAt(0).toString(16).padStart(2, '0')}`)}`;
-        const refresh = () => this._schedule('refresh', 150, () =>
-            this._refresh().catch(e => this._dbusFailed(e)));
-        const bus = Gio.DBus.session;
-        this._signalIds = [
-            bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                path, null, Gio.DBusSignalFlags.NONE, refresh),
-            bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                resyncPath, null, Gio.DBusSignalFlags.NONE, refresh),
-            bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitNew', MANAGER_PATH,
-                RESYNC_UNIT, Gio.DBusSignalFlags.NONE, refresh),
-            bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitRemoved', MANAGER_PATH,
-                RESYNC_UNIT, Gio.DBusSignalFlags.NONE, refresh),
-        ];
-        await this._refresh();
-    }
-
-    _dbusFailed(e) {
-        if (this._cancellable.is_cancelled())
-            return;
-        logError(e, 'cloud-sync-indicator: systemd not reachable');
-        this._props = {};
-        this._update();
-        // Setup did not finish: try again later instead of staying in "unknown".
-        if (!this._unitPath) {
-            this._schedule('dbus-retry', 30000, () =>
-                this._initDBus().catch(err => this._dbusFailed(err)));
-        }
-    }
-
-    async _refresh() {
-        if (!this._unitPath)
-            return;
-        const unit = await getProps(this._unitPath, 'org.freedesktop.systemd1.Unit',
-            ['ActiveState', 'SubState', 'LoadState']);
-        const svc = await getProps(this._unitPath, 'org.freedesktop.systemd1.Service',
-            ['Result', 'ExecMainStatus', 'NRestarts']);
-        // ListUnitsByPatterns returns loaded units only and does not load any itself.
-        const [units] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ListUnitsByPatterns',
-            new GLib.Variant('(asas)', [[], [RESYNC_UNIT]]), '(a(ssssssouso))')).deepUnpack();
-        if (this._cancellable.is_cancelled())
-            return;
-
-        this._props = {
-            active: unit.ActiveState,
-            sub: unit.SubState,
-            load: unit.LoadState,
-            result: svc.Result,
-            status: svc.ExecMainStatus,
-            restarts: svc.NRestarts,
-        };
-        const resyncActive = units.some(u => ['active', 'activating', 'deactivating'].includes(u[3]));
-        if (this._resyncRunning && !resyncActive)
-            this._resyncEnded();
-        this._resyncRunning = resyncActive;
-        this._update();
-    }
-
-    async isServiceRunning() {
-        await this._refresh();
-        return RUNNING.includes(this._props.active);
-    }
-
-    async stopServiceAndWait(cancellable) {
-        await unitJob('StopUnit');
-        // The client finishes running transfers first (TimeoutStopSec=90 in the unit).
-        for (let i = 0; i < 240; i++) {
-            await this._refresh();
-            if (['inactive', 'failed'].includes(this._props.active))
-                return;
-            await sleep(500, cancellable);
-        }
-        throw new Error(_('OneDrive could not be stopped.'));
-    }
-
-    async startService() {
-        try {
-            await unitJob('StartUnit');
-        } catch (e) {
-            this._notifyError(e);
-        }
-    }
-
-    _toggleService() {
-        unitJob(RUNNING.includes(this._props.active) ? 'StopUnit' : 'StartUnit')
-            .catch(e => this._notifyError(e));
-    }
-
-    _restartService() {
-        unitJob('RestartUnit').catch(e => this._notifyError(e));
     }
 
     // --- Journal -----------------------------------------------------------
 
+    // A single journalctl for all accounts.
     _startJournal() {
         if (this._cancellable.is_cancelled())
             return;
         // Older lines are replayed first (-n). No notifications meanwhile: they contain, for
         // example, sign-in errors that were resolved long ago.
         this._replaying = true;
-        this._schedule('replay-end', 1500, () => this._endReplay());
+        for (const account of this._accounts)
+            account.resetJournalState();
+        this._timers.schedule('replay-end', 1500, () => this._endReplay());
         try {
             this._journal = Gio.Subprocess.new(
-                ['journalctl', '--user', '-u', UNIT, '-u', RESYNC_UNIT, '-f', '-n', '1000',
+                ['journalctl', '--user', ...this._journalUnitArgs(), '-f', '-n', '1000',
                     '-o', 'short-iso', '--no-hostname'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
             const stream = new Gio.DataInputStream({base_stream: this._journal.get_stdout_pipe()});
@@ -798,13 +1145,13 @@ class SyncIndicator extends PanelMenu.Button {
     _journalEnded() {
         this._journal = null;
         if (!this._cancellable.is_cancelled())
-            this._schedule('journal-retry', 10000, () => this._startJournal());
+            this._timers.schedule('journal-retry', 10000, () => this._startJournal());
     }
 
     _endReplay() {
         this._replaying = false;
-        // On first start, an error that already exists should still be reported.
-        this._stateKey ??= 'unknown';
+        for (const account of this._accounts)
+            account.replayEnded();
         this._update();
     }
 
@@ -813,126 +1160,21 @@ class SyncIndicator extends PanelMenu.Button {
         const msg = m?.[2].trim();
         if (!msg)
             return;
-        const time = GLib.DateTime.new_from_iso8601(m[1], null);
-
-        if (RE_UNIT_STARTED.test(msg)) {
-            this._syncing = false;
-            this._offline = false;
-        } else if (RE_SYNC_START.test(msg)) {
-            this._syncing = true;
-        } else if (RE_SYNC_DONE.test(msg)) {
-            this._syncing = false;
-            this._authError = false;
-            this._lastSync = time;
-        }
-        if (RE_AUTH.test(msg))
-            this._authError = true;
-        if (RE_OFFLINE.test(msg))
-            this._offline = true;
-        else if (RE_ONLINE.test(msg))
-            this._offline = false;
-
-        // Both lists are kept, so that switching the setting takes effect immediately.
-        const entry = {time, msg};
-        if (RE_FILE_OP.test(msg)) {
-            this._lastActivity = entry;
-            this._pushLog(this._fileLog, entry);
-        }
-        if (!RE_ROUTINE.test(msg))
-            this._pushLog(this._log, entry);
+        this._account?.handleMessage(GLib.DateTime.new_from_iso8601(m[1], null), msg);
 
         if (this._replaying)
-            this._schedule('replay-end', 1500, () => this._endReplay());
+            this._timers.schedule('replay-end', 1500, () => this._endReplay());
         else
             this._update();
     }
 
-    // --- Config directory --------------------------------------------------
-
-    // Watches ~/.config/onedrive: the sign-in token (refresh_token) and the configuration.
-    _watchConfDir() {
-        this._checkToken();
-        try {
-            this._confMonitor = Gio.File.new_for_path(CONF_DIR).monitor_directory(
-                Gio.FileMonitorFlags.WATCH_MOVES, null);
-            this._confMonitorId = this._confMonitor.connect('changed', (_monitor, file, other, event) => {
-                const names = [file?.get_basename(), other?.get_basename()];
-                if (names.includes('refresh_token'))
-                    this._checkToken();
-                if (names.includes('config') && [Gio.FileMonitorEvent.CHANGES_DONE_HINT,
-                    Gio.FileMonitorEvent.RENAMED, Gio.FileMonitorEvent.MOVED_IN,
-                    Gio.FileMonitorEvent.CREATED].includes(event))
-                    // Editors often save in several steps – collect them briefly.
-                    this._schedule('config-notice', 2000, () => this._configChanged());
-            });
-        } catch (e) {
-            logError(e, 'cloud-sync-indicator: watching config directory');
-        }
-    }
-
-    async _checkToken() {
-        const found = await exists(TOKEN_FILE);
-        if (this._cancellable.is_cancelled())
-            return;
-        this._hasToken = found;
-        this._update();
-    }
-
-    // The client reads its configuration only at startup; version 2.5.4 requires a resync
-    // after almost any change (exit 126).
-    _configChanged() {
-        const source = MessageTray.getSystemSource();
-        const notification = new MessageTray.Notification({
-            source,
-            title: _('OneDrive configuration changed'),
-            body: _('The change takes effect after the client restarts. ' +
-                    'Version 2.5.4 then usually requires a resync.'),
-        });
-        notification.addAction(_('Restart Now'), () => this._restartService());
-        source.addNotification(notification);
-    }
-
-    // --- State -------------------------------------------------------------
-
-    _computeState() {
-        const p = this._props;
-        if (!p.active)
-            return ['unknown', _('systemd service not reachable')];
-        if (p.load === 'not-found')
-            return ['error', fmt(_('%s is not installed'), UNIT)];
-        if (this._auth)
-            return ['auth', this._authHint ?? _('Signing in …')];
-        if (this._resyncRunning)
-            return ['resyncing', _('Rebuilding the local database – this may take a while')];
-        if (!this._hasToken || this._authError)
-            return ['auth', _('Sign in again via “Sign In …”')];
-
-        switch (p.active) {
-        case 'active':
-        case 'reloading':
-            if (this._offline)
-                return ['offline', _('The client keeps retrying')];
-            return [this._syncing ? 'syncing' : 'ok', null];
-        case 'activating':
-            if (p.sub === 'auto-restart' || p.restarts >= 2)
-                return ['error', fmt(_('Restarting repeatedly (%s×) – see recent messages'), p.restarts)];
-            return ['starting', null];
-        case 'deactivating':
-            return ['stopping', null];
-        case 'failed':
-            if (p.status === 126)
-                return ['resync', _('Use “Resync …” – or run in a terminal: onedrive --sync --resync')];
-            // The client exits with status 15 on SIGTERM – a normal stop.
-            if (p.status === 15 || p.result === 'success')
-                return ['paused', null];
-            return ['error', fmt(_('Exited with status %s (%s)'), p.status, p.result)];
-        default:
-            return ['paused', null];
-        }
-    }
+    // --- Display -----------------------------------------------------------
 
     _update() {
-        const [key, hint] = this._computeState();
+        if (this._cancellable.is_cancelled())
+            return;
+        const account = this._account;
+        const [key, hint] = account.computeState();
         const state = STATES[key];
 
         this._icon.icon_name = state.icon;
@@ -947,158 +1189,39 @@ class SyncIndicator extends PanelMenu.Button {
         const details = [];
         if (hint)
             details.push(hint);
-        if (this._lastSync)
-            details.push(fmt(_('Last sync: %s'), formatTime(this._lastSync)));
-        if (this._lastActivity)
-            details.push(`${formatTime(this._lastActivity.time)}  ${this._lastActivity.msg}`);
+        if (account.lastSync)
+            details.push(fmt(_('Last sync: %s'), formatTime(account.lastSync)));
+        if (account.lastActivity)
+            details.push(`${formatTime(account.lastActivity.time)}  ${account.lastActivity.msg}`);
         this._detailItem.label.text = details.join('\n') || ' ';
 
-        const running = RUNNING.includes(this._props.active);
-        const known = !!this._props.active;
-        this._toggleItem.label.text = running ? _('Pause') : _('Start');
-        this._toggleItem.setIcon(running ? 'media-playback-pause-symbolic' : 'media-playback-start-symbolic');
-        this._toggleItem.visible = known && !this._resyncRunning;
-        this._restartItem.visible = known && this._props.active !== 'inactive' && !this._resyncRunning;
+        const known = !!account.props.active;
+        this._toggleItem.label.text = account.running ? _('Pause') : _('Start');
+        this._toggleItem.setIcon(account.running ? 'media-playback-pause-symbolic'
+            : 'media-playback-start-symbolic');
+        this._toggleItem.visible = known && !account.resyncRunning;
+        this._restartItem.visible = known && account.props.active !== 'inactive' && !account.resyncRunning;
         this._resyncItem.visible = key === 'resync';
-        this._authItem.label.text = this._auth ? _('Cancel Sign-in')
-            : this._hasToken ? _('Sign In Again …') : _('Sign In …');
-        this._authItem.setIcon(this._auth ? 'process-stop-symbolic' : 'dialog-password-symbolic');
-        this._clipItem.visible = !!this._auth?.waitingForClipboard;
+        this._authItem.label.text = account.auth ? _('Cancel Sign-in')
+            : account.hasToken ? _('Sign In Again …') : _('Sign In …');
+        this._authItem.setIcon(account.auth ? 'process-stop-symbolic' : 'dialog-password-symbolic');
+        this._clipItem.visible = !!account.auth?.waitingForClipboard;
 
-        if (!this._replaying && key !== this._stateKey) {
-            const previous = this._stateKey;
-            this._stateKey = key;
-            if (state.notify && previous !== null && !this._auth)
-                Main.notify('OneDrive', hint ? `${stateText} – ${hint}` : stateText);
-        }
-    }
-
-    // --- Sign-in -----------------------------------------------------------
-
-    _authAction() {
-        this.menu.close();
-        if (this._auth) {
-            this._auth.cancel();
-            return;
-        }
-        new ConfirmDialog({
-            title: this._hasToken ? _('Sign In to OneDrive Again') : _('Sign In to OneDrive'),
-            description: [
-                _('OneDrive will be stopped briefly.'),
-                this._hasToken ? _('The current sign-in will be discarded.') : '',
-                _('After “Continue”, a separate sign-in window with the Microsoft sign-in ' +
-                  'opens. It closes by itself once you have signed in.'),
-            ].filter(Boolean).join('\n\n'),
-        }, () => {
-            if (this._auth || this._cancellable.is_cancelled())
-                return;
-            this._auth = new AuthFlow(this);
-            this._authHint = null;
-            this._update();
-            this._auth.run().catch(logError);
-        }).open();
-    }
-
-    setAuthHint(text) {
-        this._authHint = text;
-        this._update();
-    }
-
-    authEnded(flow) {
-        if (this._auth === flow) {
-            this._auth = null;
-            this._authHint = null;
-        }
-        if (!this._cancellable.is_cancelled())
-            this._update();
-    }
-
-    authSucceeded() {
-        this._authError = false;
-    }
-
-    // --- Resync ------------------------------------------------------------
-
-    _resyncAction() {
-        this.menu.close();
-        new ConfirmDialog({
-            title: _('Resync OneDrive'),
-            description: [
-                _('The client requires a resync. The local sync database is discarded and ' +
-                  'rebuilt, and all files online and locally are compared again. Depending on ' +
-                  'the amount of data, this may take a while.'),
-                _('No files are deleted. If a file differs locally and online, the client ' +
-                  'keeps both versions (the local one as a backup copy).'),
-                _('The resync runs independently of the shell as a separate systemd unit; ' +
-                  'afterwards OneDrive continues as usual.'),
-            ].join('\n\n'),
-            okLabel: _('Start Resync'),
-        }, () => this._startResync()).open();
-    }
-
-    // Run as a transient systemd unit, so the resync survives a restart of the shell.
-    async _startResync() {
-        try {
-            const onedrive = GLib.find_program_in_path('onedrive');
-            if (!onedrive)
-                throw new Error(_('The “onedrive” client is not installed.'));
-            if (await this.isServiceRunning())
-                throw new Error(_('OneDrive is running – resync only when the client asks for it.'));
-            const proc = Gio.Subprocess.new([
-                'systemd-run', '--user', `--unit=${RESYNC_UNIT}`, '--collect',
-                '--description=OneDrive resync (Cloud Sync Indicator)', '-p', 'ProtectSystem=full',
-                // On success, start the service from within the unit, not from the shell.
-                '/bin/sh', '-c',
-                '"$0" --sync --resync --resync-auth && exec systemctl --user start onedrive.service',
-                onedrive,
-            ], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
-            const [, out] = await proc.communicate_utf8_async(null, this._cancellable);
-            if (!proc.get_successful())
-                throw new Error(lastLines(out) || _('systemd-run failed.'));
-            this._resyncRunning = true;
-            this._update();
-        } catch (e) {
-            if (!this._cancellable.is_cancelled())
-                this._notifyError(e);
-        }
-    }
-
-    // The unit's result cannot be queried (--collect removes it at once). On success it has
-    // started the service – that tells us the outcome.
-    _resyncEnded() {
-        this._schedule('resync-result', 3000, () => {
-            Main.notify('OneDrive', RUNNING.includes(this._props.active)
-                ? _('Resync finished, OneDrive is running again.')
-                : _('Resync failed – see “Full Log in Terminal”.'));
-        });
-    }
-
-    _notifyError(e) {
-        Main.notify('OneDrive', e.message ?? String(e));
+        if (!this._replaying)
+            account.noteState(key, hint);
     }
 
     destroy() {
         this._cancellable.cancel();
-        this._auth?.abort();
-        this._auth = null;
-        for (const id of this._sources.values())
-            GLib.source_remove(id);
-        this._sources.clear();
-        if (this._confMonitorId)
-            this._confMonitor.disconnect(this._confMonitorId);
-        this._confMonitor?.cancel();
-        this._confMonitor = null;
-        this._confMonitorId = 0;
+        for (const account of this._accounts)
+            account.destroy();
+        this._accounts = [];
+        this._timers.clear();
         if (this._menuOpenId)
             this.menu.disconnect(this._menuOpenId);
         this._menuOpenId = 0;
-        for (const id of this._signalIds)
-            Gio.DBus.session.signal_unsubscribe(id);
-        this._signalIds = [];
         this._journal?.force_exit();
         this._journal = null;
-        this._log = [];
-        this._fileLog = [];
         super.destroy();
     }
 });
