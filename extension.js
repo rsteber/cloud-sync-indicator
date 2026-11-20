@@ -940,6 +940,9 @@ class Account {
             this.syncing = true;
         } else if (RE_SYNC_DONE.test(msg)) {
             this.syncing = false;
+            // After a network loss (e.g. standby or a network change) the client just syncs
+            // again without logging "Successfully reached …"; a completed sync proves it is online.
+            this.offline = false;
             this.authError = false;
             this.lastSync = time;
         }
