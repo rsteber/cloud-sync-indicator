@@ -52,6 +52,11 @@ const RE_FILE_OP = new RegExp([
 const RE_AUTH = /AADSTS\d+|invalid_grant|authori[sz]e this application|re-?authenticat|refresh[_ ]token.*(invalid|expired|missing)/i;
 const RE_OFFLINE = /Cannot connect to (the )?Microsoft OneDrive|Unable to (reach|access) (the )?Microsoft OneDrive|network connection.*(not |un)available|Internet connectivity.*(lost|unavailable|interrupted)/i;
 const RE_ONLINE = /Successfully reached (the )?Microsoft OneDrive|Internet connectivity.*restored/i;
+// The client refuses to delete more than classify_as_big_delete items online (default 1000)
+// and exits with status 1 – systemd then restarts it again and again.
+const RE_BIG_DELETE = /attempt to remove a large volume of data/i;
+const RE_BIG_DELETE_COUNT = /total number of items being deleted is:\s*(\d+)/i;
+const RE_REMOTE_DELETE = /^Deleting item from Microsoft OneDrive: (.+)$/;
 // Messages of every sync cycle (and the monitor's startup summary) that would only clutter
 // the full message list.
 const RE_ROUTINE = new RegExp([
@@ -65,16 +70,34 @@ const RE_ROUTINE = new RegExp([
 // Exit status of the client when a resync is required: 126 up to 2.5.11, 78 from 2.5.12.
 const RESYNC_EXIT = [126, 78];
 
+// One-off runs of the client next to the service, each as a transient systemd unit.
+const JOBS = {
+    resync: {
+        description: 'OneDrive resync (Cloud Sync Indicator)',
+        args: ['--sync', '--resync', '--resync-auth'],
+        done: N_('Resync finished, OneDrive is running again.'),
+        failed: N_('Resync failed – see “Full Log in Terminal”.'),
+    },
+    force: {
+        description: 'OneDrive deletion confirmed by the user (Cloud Sync Indicator)',
+        args: ['--sync', '--force'],
+        done: N_('Items deleted online, OneDrive is running again.'),
+        failed: N_('Deleting online failed – see “Full Log in Terminal”.'),
+    },
+};
+
 const STATES = {
     ok: {icon: 'weather-overcast-symbolic', text: N_('Up to date')},
     syncing: {icon: 'view-refresh-symbolic', text: N_('Syncing …')},
     resyncing: {icon: 'view-refresh-symbolic', text: N_('Resync running …'), style: 'cloud-sync-warning'},
+    deleting: {icon: 'view-refresh-symbolic', text: N_('Deleting online …'), style: 'cloud-sync-warning'},
     starting: {icon: 'content-loading-symbolic', text: N_('Starting …')},
     stopping: {icon: 'content-loading-symbolic', text: N_('Stopping …')},
     paused: {icon: 'media-playback-pause-symbolic', text: N_('Paused')},
     offline: {icon: 'network-offline-symbolic', text: N_('No connection to OneDrive'), style: 'cloud-sync-warning'},
     auth: {icon: 'dialog-password-symbolic', text: N_('Sign-in required'), style: 'cloud-sync-error', notify: true},
     resync: {icon: 'dialog-warning-symbolic', text: N_('Resync required'), style: 'cloud-sync-error', notify: true},
+    bigDelete: {icon: 'user-trash-full-symbolic', text: N_('Large deletion stopped'), style: 'cloud-sync-error', notify: true},
     error: {icon: 'dialog-error-symbolic', text: N_('Error'), style: 'cloud-sync-error', notify: true},
     unknown: {icon: 'weather-overcast-symbolic', text: N_('Status unknown'), style: 'cloud-sync-warning'},
 };
@@ -694,7 +717,8 @@ class Account {
         this._indicator = indicator;
         this.unit = unit;
         this.id = unit.replace(/\.service$/, '');
-        this.resyncUnit = `cloud-sync-indicator-resync-${this.id}.service`;
+        this.jobUnits = Object.fromEntries(Object.keys(JOBS).map(job =>
+            [job, `cloud-sync-indicator-${job}-${this.id}.service`]));
         this.confDir = confDir;
         this.tokenFile = GLib.build_filenamev([confDir, 'refresh_token']);
         this.configFile = GLib.build_filenamev([confDir, 'config']);
@@ -707,7 +731,8 @@ class Account {
 
         this.props = {};
         this.hasToken = true;
-        this.resyncRunning = false;
+        this.job = null;          // key of the running entry in JOBS
+        this._jobStart = null;
         this.auth = null;
         this.authHint = null;
         this.stateKey = null;
@@ -784,12 +809,14 @@ class Account {
         this._signalIds = [
             bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
                 path, null, Gio.DBusSignalFlags.NONE, refresh),
-            bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                unitObjectPath(this.resyncUnit), null, Gio.DBusSignalFlags.NONE, refresh),
-            bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitNew', MANAGER_PATH,
-                this.resyncUnit, Gio.DBusSignalFlags.NONE, refresh),
-            bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitRemoved', MANAGER_PATH,
-                this.resyncUnit, Gio.DBusSignalFlags.NONE, refresh),
+            ...Object.values(this.jobUnits).flatMap(jobUnit => [
+                bus.signal_subscribe(SYSTEMD, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+                    unitObjectPath(jobUnit), null, Gio.DBusSignalFlags.NONE, refresh),
+                bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitNew', MANAGER_PATH,
+                    jobUnit, Gio.DBusSignalFlags.NONE, refresh),
+                bus.signal_subscribe(SYSTEMD, MANAGER_IFACE, 'UnitRemoved', MANAGER_PATH,
+                    jobUnit, Gio.DBusSignalFlags.NONE, refresh),
+            ]),
         ];
         await this._refresh();
         await this._autostart();
@@ -827,7 +854,7 @@ class Account {
             ['Result', 'ExecMainStatus', 'NRestarts']);
         // ListUnitsByPatterns returns loaded units only and does not load any itself.
         const [units] = (await dbusCall(MANAGER_PATH, MANAGER_IFACE, 'ListUnitsByPatterns',
-            new GLib.Variant('(asas)', [[], [this.resyncUnit]]), '(a(ssssssouso))')).deepUnpack();
+            new GLib.Variant('(asas)', [[], Object.values(this.jobUnits)]), '(a(ssssssouso))')).deepUnpack();
         if (this._cancellable.is_cancelled())
             return;
 
@@ -839,10 +866,11 @@ class Account {
             status: svc.ExecMainStatus,
             restarts: svc.NRestarts,
         };
-        const resyncActive = units.some(u => ['active', 'activating', 'deactivating'].includes(u[3]));
-        if (this.resyncRunning && !resyncActive)
-            this._resyncEnded();
-        this.resyncRunning = resyncActive;
+        const active = units.find(u => ['active', 'activating', 'deactivating'].includes(u[3]));
+        const job = Object.keys(JOBS).find(key => this.jobUnits[key] === active?.[0]) ?? null;
+        if (this.job && this.job !== job)
+            this._jobEnded(this.job);
+        this.job = job;
         this._changed();
     }
 
@@ -868,6 +896,8 @@ class Account {
     }
 
     async startService() {
+        // Started by the user: perhaps after putting the files back.
+        this.bigDelete = null;
         try {
             if (!this.managed) {
                 await unitJob('StartUnit', this.unit);
@@ -916,6 +946,7 @@ class Account {
     }
 
     restartService() {
+        this.bigDelete = null;
         unitJob('RestartUnit', this.unit).catch(e => this._notifyError(e));
     }
 
@@ -926,26 +957,48 @@ class Account {
         this.syncing = false;
         this.offline = false;
         this.authError = false;
+        this.bigDelete = null;    // {count, paths} after the client refused a large deletion
+        this._remoteDeletes = [];
         this.lastSync = null;
         this.lastActivity = null;
         this.log = [];       // all messages except routine lines
         this.fileLog = [];   // file operations only
     }
 
-    handleMessage(time, msg) {
+    // live: false while older lines are replayed.
+    handleMessage(time, msg, unit, live) {
         if (msg.startsWith(`Started ${this.unit}`)) {
             this.syncing = false;
             this.offline = false;
+            this.bigDelete = null;
+            this._remoteDeletes = [];
         } else if (RE_SYNC_START.test(msg)) {
             this.syncing = true;
+            this._remoteDeletes = [];
         } else if (RE_SYNC_DONE.test(msg)) {
             this.syncing = false;
             // After a network loss (e.g. standby or a network change) the client just syncs
             // again without logging "Successfully reached …"; a completed sync proves it is online.
             this.offline = false;
             this.authError = false;
+            this.bigDelete = null;
+            this._remoteDeletes = [];
             this.lastSync = time;
         }
+        // The client stops at the item that would delete too much: keep the last ones.
+        const remoteDelete = msg.match(RE_REMOTE_DELETE);
+        if (remoteDelete)
+            this._remoteDeletes = [...this._remoteDeletes.slice(-2), remoteDelete[1]];
+        if (RE_BIG_DELETE.test(msg)) {
+            this.bigDelete = {count: null, paths: this._remoteDeletes};
+            this._remoteDeletes = [];
+            // Restarting only repeats the refusal; the account waits for the user's decision.
+            if (live && unit === this.unit)
+                unitJob('StopUnit', this.unit).catch(e => this._notifyError(e));
+        }
+        const count = msg.match(RE_BIG_DELETE_COUNT);
+        if (count && this.bigDelete)
+            this.bigDelete.count = Number(count[1]);
         if (RE_AUTH.test(msg))
             this.authError = true;
         if (RE_OFFLINE.test(msg))
@@ -1025,10 +1078,14 @@ class Account {
             return ['error', fmt(_('%s is not installed'), this.unit)];
         if (this.auth)
             return ['auth', this.authHint ?? _('Signing in …')];
-        if (this.resyncRunning)
+        if (this.job === 'resync')
             return ['resyncing', _('Rebuilding the local database – this may take a while')];
+        if (this.job === 'force')
+            return ['deleting', null];
         if (!this.hasToken || this.authError)
             return ['auth', _('Sign in again via “Sign In”')];
+        if (this.bigDelete)
+            return ['bigDelete', this._bigDeleteText()];
 
         switch (p.active) {
         case 'active':
@@ -1171,29 +1228,62 @@ class Account {
                   'afterwards OneDrive continues as usual.'),
             ].join('\n\n'),
             okLabel: _('Start Resync'),
-        }, () => this._startResync()).open();
+        }, () => this._startJob('resync')).open();
     }
 
-    // Run as a transient systemd unit, so the resync survives a restart of the shell.
-    async _startResync() {
+    // --- Large deletion ----------------------------------------------------
+
+    _bigDeleteText() {
+        const {count, paths} = this.bigDelete;
+        const items = count ?? '?';
+        return paths.length > 0
+            ? fmt(_('%s items missing locally, e.g. “%s”'), items, paths.at(-1))
+            : fmt(_('%s items missing locally'), items);
+    }
+
+    forceDeleteAction() {
+        this._indicator.menu.close();
+        new ConfirmDialog({
+            title: _('Delete on OneDrive Too?'),
+            description: [
+                fmt(_('%s. Because so many deletions can also be a mistake – for example a ' +
+                      'moved folder or a missing drive – the client stopped instead of ' +
+                      'deleting them online. Nothing has been deleted online yet.'),
+                this._bigDeleteText()),
+                _('If you deleted or moved them on purpose, the client now deletes them on ' +
+                  'OneDrive as well. Deleted items stay in the OneDrive recycle bin for a while.'),
+                _('If not, put the files back into the OneDrive folder and choose “Start”.'),
+            ].join('\n\n'),
+            okLabel: _('Delete Online'),
+        }, () => this._startJob('force')).open();
+    }
+
+    // --- One-off runs ------------------------------------------------------
+
+    // Run as a transient systemd unit, so the job survives a restart of the shell.
+    async _startJob(job) {
         try {
             const onedrive = GLib.find_program_in_path('onedrive');
             if (!onedrive)
                 throw new Error(_('The “onedrive” client is not installed.'));
-            if (await this.isServiceRunning())
-                throw new Error(_('OneDrive is running – resync only when the client asks for it.'));
+            if (await this.isServiceRunning()) {
+                throw new Error(job === 'resync'
+                    ? _('OneDrive is running – resync only when the client asks for it.')
+                    : _('OneDrive is running – pause it first.'));
+            }
             const proc = Gio.Subprocess.new([
-                'systemd-run', '--user', `--unit=${this.resyncUnit}`, '--collect',
-                '--description=OneDrive resync (Cloud Sync Indicator)', '-p', 'ProtectSystem=full',
+                'systemd-run', '--user', `--unit=${this.jobUnits[job]}`, '--collect',
+                `--description=${JOBS[job].description}`, '-p', 'ProtectSystem=full',
                 // On success, start the service from within the unit, not from the shell.
                 // Paths and unit names are passed as arguments, never as part of the script.
                 '/bin/sh', '-c', 'unit=$1; shift; "$0" "$@" && exec systemctl --user start "$unit"',
-                onedrive, this.unit, '--sync', '--resync', '--resync-auth', ...this.clientArgs,
+                onedrive, this.unit, ...JOBS[job].args, ...this.clientArgs,
             ], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
             const [out] = await proc.communicate_utf8_async(null, this._cancellable);
             if (!proc.get_successful())
                 throw new Error(lastLines(out) || _('systemd-run failed.'));
-            this.resyncRunning = true;
+            this.job = job;
+            this._jobStart = GLib.DateTime.new_now_utc();
             this._changed();
         } catch (e) {
             if (!this._cancellable.is_cancelled())
@@ -1202,12 +1292,16 @@ class Account {
     }
 
     // The unit's result cannot be queried (--collect removes it at once). On success it has
-    // started the service – that tells us the outcome.
-    _resyncEnded() {
-        this._timers.schedule('resync-result', 3000, () => {
-            Main.notify(this.title, this.running
-                ? _('Resync finished, OneDrive is running again.')
-                : _('Resync failed – see “Full Log in Terminal”.'));
+    // started the service – that tells us the outcome. A stopped account created by the
+    // extension has no unit to start; then a completed sync tells, and the extension starts it.
+    _jobEnded(job) {
+        const start = this._jobStart;
+        this._jobStart = null;
+        this._timers.schedule('job-result', 3000, () => {
+            const synced = start && this.lastSync && this.lastSync.compare(start) > 0;
+            if (!this.running && this.managed && synced)
+                this.startService();
+            Main.notify(this.title, _(this.running || synced ? JOBS[job].done : JOBS[job].failed));
         });
     }
 
@@ -1405,6 +1499,8 @@ class AccountView {
             'media-playback-pause-symbolic');
         this._resyncItem = actions.addAction(_('Resync'), () => account.resyncAction(),
             'view-refresh-symbolic');
+        this._forceItem = actions.addAction(_('Delete Online Too'), () => account.forceDeleteAction(),
+            'user-trash-symbolic');
         this._restartItem = actions.addAction(_('Restart'), () => account.restartService(),
             'system-reboot-symbolic');
         this._clipItem = actions.addAction(_('Sign in from clipboard'),
@@ -1463,9 +1559,10 @@ class AccountView {
         this._toggleItem.label.text = account.running ? _('Pause') : _('Start');
         this._toggleItem.setIcon(account.running ? 'media-playback-pause-symbolic'
             : 'media-playback-start-symbolic');
-        this._toggleItem.visible = known && !account.resyncRunning;
-        this._restartItem.visible = known && account.props.active !== 'inactive' && !account.resyncRunning;
+        this._toggleItem.visible = known && !account.job;
+        this._restartItem.visible = known && account.props.active !== 'inactive' && !account.job;
         this._resyncItem.visible = key === 'resync';
+        this._forceItem.visible = key === 'bigDelete';
         this._authItem.label.text = account.auth ? _('Cancel Sign-in')
             : account.hasToken ? _('Sign In Again') : _('Sign In');
         this._authItem.setIcon(account.auth ? 'process-stop-symbolic' : 'dialog-password-symbolic');
@@ -1477,8 +1574,8 @@ class AccountView {
 }
 
 // The panel icon shows the account that most needs attention.
-const SEVERITY = ['error', 'resync', 'auth', 'offline', 'unknown', 'resyncing', 'paused',
-    'starting', 'stopping', 'syncing', 'ok'];
+const SEVERITY = ['error', 'bigDelete', 'resync', 'auth', 'offline', 'unknown', 'resyncing',
+    'deleting', 'paused', 'starting', 'stopping', 'syncing', 'ok'];
 
 // ---------------------------------------------------------------------------
 // Panel indicator
@@ -1761,7 +1858,7 @@ class SyncIndicator extends PanelMenu.Button {
     }
 
     _journalUnitArgs() {
-        return this._accounts.flatMap(a => ['-u', a.unit, '-u', a.resyncUnit]);
+        return this._accounts.flatMap(a => [a.unit, ...Object.values(a.jobUnits)].flatMap(u => ['-u', u]));
     }
 
     _openJournalInTerminal() {
@@ -1856,12 +1953,13 @@ class SyncIndicator extends PanelMenu.Button {
         msg = typeof msg === 'string' ? msg.trim() : '';
         // Messages from systemd itself ("Started …") carry the unit in USER_UNIT.
         const unit = entry.USER_UNIT ?? entry._SYSTEMD_USER_UNIT;
-        const account = this._accounts.find(a => a.unit === unit || a.resyncUnit === unit);
+        const account = this._accounts.find(a => a.unit === unit ||
+            Object.values(a.jobUnits).includes(unit));
         if (!msg || !account)
             return;
         // __REALTIME_TIMESTAMP: microseconds since the epoch, as a string.
         const time = GLib.DateTime.new_from_unix_utc(0).add(Number(entry.__REALTIME_TIMESTAMP));
-        account.handleMessage(time, msg);
+        account.handleMessage(time, msg, unit, !this._replaying);
 
         if (this._replaying)
             this._timers.schedule('replay-end', 1500, () => this._endReplay());

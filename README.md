@@ -20,6 +20,10 @@ running as a systemd user service (`onedrive.service`).
 - **Resync:** when the client requires one (exit status 126, or 78 from client 2.5.12), it can
   be started from the menu.
   It runs as a separate systemd unit and starts the service again afterwards.
+- **Large deletions:** when the client refuses to delete many items online
+  (`classify_as_big_delete`, default 1000), the extension stops the restart loop and shows how
+  many items are missing locally. Either put the files back and choose Start, or confirm the
+  deletion with “Delete Online Too” (a one-off `onedrive --sync --force`, run like the resync).
 - **Several accounts:** add and remove accounts from the menu; client instances set up by
   hand as systemd user units are found automatically (see [Several accounts](#several-accounts)).
 - **Notice after configuration changes:** the client reads its configuration only at startup;
